@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 import csv
 from pathlib import Path
+from typing import Self
 
 from pydantic import BaseModel, ConfigDict
 
@@ -31,7 +30,7 @@ class MetricRow(BaseModel):
         metric_name: str,
         metric_value: float,
         artifact_path: str,
-    ) -> MetricRow:
+    ) -> Self:
         calibration_dataset, num_calibration_samples = config.calibration_metadata()
         return cls(
             run_id=run_id,

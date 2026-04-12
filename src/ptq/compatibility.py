@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from ptq.config import (
     ArtifactQuantizationSettings,
     PTQRunConfig,

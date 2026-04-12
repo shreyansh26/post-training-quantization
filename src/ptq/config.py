@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Self
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -72,7 +70,7 @@ class RuntimeSettings(BaseModel):
     max_model_len: int = 4096
 
     @model_validator(mode="after")
-    def validate_runtime(self) -> RuntimeSettings:
+    def validate_runtime(self) -> Self:
         if self.gpu_memory_utilization <= 0.0 or self.gpu_memory_utilization > 1.0:
             raise ValueError("gpu_memory_utilization must be in (0, 1]")
         if self.max_model_len <= 0:
@@ -91,7 +89,7 @@ class MethodSettings(BaseModel):
     activation_ordering: str = "static"
 
     @model_validator(mode="after")
-    def validate_method_params(self) -> MethodSettings:
+    def validate_method_params(self) -> Self:
         if not (0.0 <= self.smoothquant_alpha <= 1.0):
             raise ValueError("smoothquant_alpha must be in [0, 1]")
         if self.awq_clip_ratio <= 0.0:
@@ -116,7 +114,7 @@ class ArtifactQuantizationSettings(BaseModel):
     block_size: int | None = None
 
     @model_validator(mode="after")
-    def validate_consistency(self) -> ArtifactQuantizationSettings:
+    def validate_consistency(self) -> Self:
         if self.enabled:
             if self.dtype is QuantizationDType.NONE:
                 raise ValueError("enabled artifacts must declare a non-none dtype")
@@ -208,7 +206,7 @@ class EvaluationSettings(BaseModel):
     lm_eval_max_gen_toks: int = 512
 
     @model_validator(mode="after")
-    def validate_eval(self) -> EvaluationSettings:
+    def validate_eval(self) -> Self:
         if self.dev_limit <= 0:
             raise ValueError("dev_limit must be positive")
         if not self.tasks:
@@ -239,7 +237,7 @@ class PTQRunConfig(BaseModel):
     logging: LoggingSettings
 
     @model_validator(mode="after")
-    def validate_basic_constraints(self) -> PTQRunConfig:
+    def validate_basic_constraints(self) -> Self:
         enabled_artifacts = [
             name
             for name, artifact in self.artifacts
