@@ -1,4 +1,4 @@
-"""Simulation-only W8A8 modules used in tests and local validation."""
+"""Simulation-only linear wrappers used in tests and local validation."""
 
 import copy
 

@@ -13,9 +13,9 @@ from ptq.config import (
 from ptq.quantization.awq import apply_awq
 from ptq.quantization.compressed import prepare_model_for_quantization
 from ptq.quantization.gptq import apply_gptq
-from ptq.quantization.rtn import quantize_linear_weight_rtn
+from ptq.quantization.simulated_w8a8_linear import SimulatedW8A8Linear
 from ptq.quantization.smoothquant import apply_smoothquant
-from ptq.quantization.w8a8 import SimulatedW8A8Linear
+from ptq.quantization.weight_only import quantize_linear_weight_rtn
 
 
 def test_rtn_int8_channel_quantization_preserves_shape() -> None:

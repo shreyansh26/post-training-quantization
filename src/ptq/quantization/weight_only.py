@@ -1,4 +1,11 @@
-"""Shared helpers for weight-only quantization algorithms."""
+"""Shared helpers for weight-only quantization algorithms.
+
+This module owns the reusable weight quantization math that is shared by:
+
+- weight-only fake quantization helpers
+- AWQ
+- GPTQ
+"""
 
 from dataclasses import dataclass
 from math import ceil
@@ -252,3 +259,26 @@ def quantize_dequantize_weight_column(
     q = torch.round(column / scale + zero_point)
     q = torch.clamp(q, float(q_min.item()), float(q_max.item()))
     return (q - zero_point) * scale
+
+
+def quantize_linear_weight_rtn(
+    weight: torch.Tensor,
+    settings: ArtifactQuantizationSettings,
+) -> tuple[torch.Tensor, torch.Tensor | None]:
+    """Apply RTN-style fake quantization to a linear weight matrix."""
+    quantized, params = quantize_dequantize_weight(weight, settings)
+    scale = None
+    if settings.dtype is QuantizationDType.INT8:
+        scale = params.scale
+    return quantized, scale
+
+
+def apply_rtn_qdq(
+    inputs: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor | None,
+    settings: ArtifactQuantizationSettings,
+) -> torch.Tensor:
+    """Run a linear projection with RTN-quantized weights."""
+    qweight, _scale = quantize_linear_weight_rtn(weight, settings)
+    return F.linear(inputs, qweight, bias)
