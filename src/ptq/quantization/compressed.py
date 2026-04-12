@@ -26,6 +26,10 @@ from ptq.config import (
     QuantizationMethod,
 )
 from ptq.data import batched_texts
+from ptq.quantization.awq import apply_awq
+from ptq.quantization.gptq import apply_gptq
+from ptq.quantization.smoothquant import apply_smoothquant
+from ptq.quantization.weight_only import WeightQuantizationParameters
 
 
 @dataclass
@@ -108,6 +112,15 @@ def _build_quant_args(
 
 def _quantization_format_for_config(config: PTQRunConfig) -> str:
     """Infer the export format label expected by compressed-tensors."""
+    if (
+        config.artifacts.weights.enabled
+        and not config.artifacts.activations.enabled
+        and not config.artifacts.attention.enabled
+        and not config.artifacts.kv_cache.enabled
+        and config.artifacts.weights.dtype is QuantizationDType.INT8
+    ):
+        return "pack-quantized"
+
     enabled_dtypes = []
     for name in ("weights", "activations", "attention", "kv_cache"):
         artifact = getattr(config.artifacts, name)
@@ -348,34 +361,9 @@ def collect_activation_statistics(
     return results
 
 
-def _weight_importance(
-    method: QuantizationMethod,
-    module_name: str,
-    stats: dict[str, ModuleActivationStats],
-    config: PTQRunConfig,
-) -> torch.Tensor | None:
-    """Derive method-specific weighting signals from calibration statistics."""
-    if module_name not in stats:
-        return None
-    module_stats = stats[module_name]
-    if method is QuantizationMethod.AWQ:
-        importance = module_stats.channel_absmax
-        denom = torch.clamp(importance.mean(), min=1e-8)
-        return torch.clamp(importance / denom, min=1e-4)
-    if method is QuantizationMethod.GPTQ:
-        damp = config.method.gptq_damp_percent
-        return torch.sqrt(torch.clamp(module_stats.channel_sq_mean + damp, min=1e-8))
-    if method is QuantizationMethod.SMOOTHQUANT:
-        alpha = config.method.smoothquant_alpha
-        return torch.clamp(module_stats.channel_absmax.pow(alpha), min=1e-4)
-    return None
-
-
 def populate_weight_quantization_parameters(
     model: torch.nn.Module,
-    method: QuantizationMethod,
-    config: PTQRunConfig,
-    activation_stats: dict[str, ModuleActivationStats],
+    gptq_parameters: dict[str, WeightQuantizationParameters] | None = None,
 ) -> None:
     """Populate serialized weight scales and zero-points after instrumentation."""
     for name, module in model.named_modules():
@@ -385,21 +373,19 @@ def populate_weight_quantization_parameters(
         if not hasattr(module, "weight"):
             continue
 
-        weight = module.weight.detach().to(torch.float32)
-        importance = _weight_importance(method, name, activation_stats, config)
-        if importance is not None and importance.numel() == weight.shape[1]:
-            adjusted_weight = weight * importance.to(weight.device).reshape(1, -1)
+        if gptq_parameters is not None and name in gptq_parameters:
+            scale = gptq_parameters[name].scale
+            zero_point = gptq_parameters[name].zero_point
         else:
-            adjusted_weight = weight
-
-        args = scheme.weights
-        reduced = _reshape_for_weight_scale(
-            adjusted_weight,
-            args.strategy,
-            args.group_size,
-            args.block_structure,
-        )
-        scale, zero_point = _calculate_scale_zp(reduced, args)
+            weight = module.weight.detach().to(torch.float32)
+            args = scheme.weights
+            reduced = _reshape_for_weight_scale(
+                weight,
+                args.strategy,
+                args.group_size,
+                args.block_structure,
+            )
+            scale, zero_point = _calculate_scale_zp(reduced, args)
         _set_module_param(module, "weight_scale", scale)
         _set_module_param(module, "weight_zero_point", zero_point)
 
@@ -458,6 +444,36 @@ def prepare_model_for_quantization(
     device: str,
 ) -> QuantizationConfig:
     """Collect stats on the dense model, then instrument and populate scales."""
+    if config.method.name is QuantizationMethod.SMOOTHQUANT:
+        apply_smoothquant(
+            model=model,
+            tokenizer=tokenizer,
+            calibration_texts=calibration_texts,
+            config=config,
+            device=device,
+        )
+    elif config.method.name is QuantizationMethod.AWQ:
+        apply_awq(
+            model=model,
+            tokenizer=tokenizer,
+            calibration_texts=calibration_texts,
+            config=config,
+            device=device,
+        )
+
+    gptq_parameters: dict[str, WeightQuantizationParameters] | None = None
+    if config.method.name is QuantizationMethod.GPTQ:
+        gptq_parameters = {
+            name: params
+            for name, (_quantized_weight, params) in apply_gptq(
+                model=model,
+                tokenizer=tokenizer,
+                calibration_texts=calibration_texts,
+                config=config,
+                device=device,
+            ).items()
+        }
+
     activation_stats = collect_activation_statistics(
         model=model,
         tokenizer=tokenizer,
@@ -469,9 +485,7 @@ def prepare_model_for_quantization(
     apply_quantization_config(model, quant_config)
     populate_weight_quantization_parameters(
         model=model,
-        method=config.method.name,
-        config=config,
-        activation_stats=activation_stats,
+        gptq_parameters=gptq_parameters,
     )
     populate_static_activation_parameters(
         model=model,

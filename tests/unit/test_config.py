@@ -161,3 +161,17 @@ def test_static_activation_group_granularity_is_rejected() -> None:
         match="static activation quantization does not support group granularity",
     ):
         validate_supported_config(config)
+
+
+def test_smoothquant_requires_activation_quantization() -> None:
+    raw = _base_config()
+    raw["method"]["name"] = "smoothquant"
+    raw["artifacts"]["activations"] = {
+        "enabled": False,
+        "dtype": "none",
+        "granularity": "none",
+        "symmetric": True,
+    }
+    config = PTQRunConfig.model_validate(raw)
+    with pytest.raises(ValueError, match="smoothquant requires activation"):
+        validate_supported_config(config)

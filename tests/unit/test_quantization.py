@@ -1,15 +1,20 @@
 from types import SimpleNamespace
 
 import torch
+import torch.nn as nn
 
 from ptq.config import (
     ArtifactQuantizationSettings,
     PTQRunConfig,
     QuantizationDType,
     QuantizationGranularity,
+    QuantizationMethod,
 )
+from ptq.quantization.awq import apply_awq
 from ptq.quantization.compressed import prepare_model_for_quantization
+from ptq.quantization.gptq import apply_gptq
 from ptq.quantization.rtn import quantize_linear_weight_rtn
+from ptq.quantization.smoothquant import apply_smoothquant
 from ptq.quantization.w8a8 import SimulatedW8A8Linear
 
 
@@ -95,6 +100,62 @@ class _TinyLM(torch.nn.Module):
         return SimpleNamespace(logits=logits, attention_mask=attention_mask)
 
 
+class _TinyAttention(nn.Module):
+    def __init__(self, hidden_size: int) -> None:
+        super().__init__()
+        self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+
+
+class _TinyMLP(nn.Module):
+    def __init__(self, hidden_size: int) -> None:
+        super().__init__()
+        self.gate_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+        self.up_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+
+
+class _TinyQwenBlock(nn.Module):
+    def __init__(self, hidden_size: int) -> None:
+        super().__init__()
+        self.input_layernorm = nn.LayerNorm(hidden_size)
+        self.self_attn = _TinyAttention(hidden_size)
+        self.post_attention_layernorm = nn.LayerNorm(hidden_size)
+        self.mlp = _TinyMLP(hidden_size)
+
+
+class _TinyQwenBody(nn.Module):
+    def __init__(self, hidden_size: int) -> None:
+        super().__init__()
+        self.layers = nn.ModuleList([_TinyQwenBlock(hidden_size)])
+
+
+class Qwen3ForCausalLM(nn.Module):
+    def __init__(self, hidden_size: int = 16) -> None:
+        super().__init__()
+        self.embed = nn.Embedding(32, hidden_size)
+        self.model = _TinyQwenBody(hidden_size)
+        self.lm_head = nn.Linear(hidden_size, 32)
+
+    def forward(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ) -> SimpleNamespace:
+        hidden = self.embed(input_ids)
+        block = self.model.layers[0]
+        attn_input = block.input_layernorm(hidden)
+        attn_hidden = (
+            block.self_attn.q_proj(attn_input)
+            + block.self_attn.k_proj(attn_input)
+            + block.self_attn.v_proj(attn_input)
+        )
+        mlp_input = block.post_attention_layernorm(hidden)
+        mlp_hidden = block.mlp.gate_proj(mlp_input) + block.mlp.up_proj(mlp_input)
+        logits = self.lm_head(attn_hidden + mlp_hidden)
+        return SimpleNamespace(logits=logits, attention_mask=attention_mask)
+
+
 def _static_fp8_config() -> PTQRunConfig:
     return PTQRunConfig.model_validate(
         {
@@ -177,6 +238,77 @@ def _static_fp8_config() -> PTQRunConfig:
     )
 
 
+def _smoothquant_config() -> PTQRunConfig:
+    config = _static_fp8_config()
+    return config.model_copy(
+        update={
+            "method": config.method.model_copy(
+                update={"name": QuantizationMethod.SMOOTHQUANT}
+            ),
+            "artifacts": config.artifacts.model_copy(
+                update={
+                    "weights": config.artifacts.weights.model_copy(
+                        update={"dtype": QuantizationDType.INT8}
+                    ),
+                    "activations": config.artifacts.activations.model_copy(
+                        update={"dtype": QuantizationDType.INT8}
+                    ),
+                }
+            ),
+        }
+    )
+
+
+def _awq_config() -> PTQRunConfig:
+    config = _static_fp8_config()
+    return config.model_copy(
+        update={
+            "method": config.method.model_copy(
+                update={"name": QuantizationMethod.AWQ}
+            ),
+            "artifacts": config.artifacts.model_copy(
+                update={
+                    "weights": config.artifacts.weights.model_copy(
+                        update={"dtype": QuantizationDType.INT8}
+                    ),
+                    "activations": config.artifacts.activations.model_copy(
+                        update={
+                            "enabled": False,
+                            "dtype": QuantizationDType.NONE,
+                            "granularity": QuantizationGranularity.NONE,
+                        }
+                    ),
+                }
+            ),
+        }
+    )
+
+
+def _gptq_config() -> PTQRunConfig:
+    config = _static_fp8_config()
+    return config.model_copy(
+        update={
+            "method": config.method.model_copy(
+                update={"name": QuantizationMethod.GPTQ}
+            ),
+            "artifacts": config.artifacts.model_copy(
+                update={
+                    "weights": config.artifacts.weights.model_copy(
+                        update={"dtype": QuantizationDType.INT8}
+                    ),
+                    "activations": config.artifacts.activations.model_copy(
+                        update={
+                            "enabled": False,
+                            "dtype": QuantizationDType.NONE,
+                            "granularity": QuantizationGranularity.NONE,
+                        }
+                    ),
+                }
+            ),
+        }
+    )
+
+
 def test_prepare_static_fp8_quantization_keeps_input_scales_finite() -> None:
     model = _TinyLM().eval()
     tokenizer = _TinyTokenizer()
@@ -197,3 +329,85 @@ def test_prepare_static_fp8_quantization_keeps_input_scales_finite() -> None:
     ]
     assert input_scales
     assert all(torch.isfinite(scale).all() for scale in input_scales)
+
+
+def test_apply_smoothquant_preserves_qwen_projection_outputs() -> None:
+    torch.manual_seed(0)
+    model = Qwen3ForCausalLM(hidden_size=8).eval()
+    tokenizer = _TinyTokenizer()
+    config = _smoothquant_config()
+
+    block = model.model.layers[0]
+    hidden = torch.randn(2, 3, 8)
+
+    attn_input_before = block.input_layernorm(hidden)
+    q_before = block.self_attn.q_proj(attn_input_before)
+    gate_input_before = block.post_attention_layernorm(hidden)
+    gate_before = block.mlp.gate_proj(gate_input_before)
+
+    apply_smoothquant(
+        model=model,
+        tokenizer=tokenizer,
+        calibration_texts=["hello", "quantization"],
+        config=config,
+        device="cpu",
+    )
+
+    attn_input_after = block.input_layernorm(hidden)
+    q_after = block.self_attn.q_proj(attn_input_after)
+    gate_input_after = block.post_attention_layernorm(hidden)
+    gate_after = block.mlp.gate_proj(gate_input_after)
+
+    assert torch.allclose(q_before, q_after, atol=1e-4, rtol=1e-4)
+    assert torch.allclose(gate_before, gate_after, atol=1e-4, rtol=1e-4)
+
+
+def test_apply_awq_preserves_qwen_projection_outputs() -> None:
+    torch.manual_seed(0)
+    model = Qwen3ForCausalLM(hidden_size=8).eval()
+    tokenizer = _TinyTokenizer()
+    config = _awq_config()
+
+    block = model.model.layers[0]
+    hidden = torch.randn(2, 3, 8)
+
+    attn_input_before = block.input_layernorm(hidden)
+    q_before = block.self_attn.q_proj(attn_input_before)
+    gate_input_before = block.post_attention_layernorm(hidden)
+    gate_before = block.mlp.gate_proj(gate_input_before)
+
+    apply_awq(
+        model=model,
+        tokenizer=tokenizer,
+        calibration_texts=["hello", "quantization"],
+        config=config,
+        device="cpu",
+    )
+
+    attn_input_after = block.input_layernorm(hidden)
+    q_after = block.self_attn.q_proj(attn_input_after)
+    gate_input_after = block.post_attention_layernorm(hidden)
+    gate_after = block.mlp.gate_proj(gate_input_after)
+
+    assert torch.allclose(q_before, q_after, atol=1e-4, rtol=1e-4)
+    assert torch.allclose(gate_before, gate_after, atol=1e-4, rtol=1e-4)
+
+
+def test_apply_gptq_updates_tiny_model_weights() -> None:
+    torch.manual_seed(0)
+    model = _TinyLM().eval()
+    tokenizer = _TinyTokenizer()
+    config = _gptq_config()
+    original_weight = model.fc1.weight.detach().clone()
+
+    quantized = apply_gptq(
+        model=model,
+        tokenizer=tokenizer,
+        calibration_texts=["hello", "quantization"],
+        config=config,
+        device="cpu",
+    )
+
+    assert "fc1" in quantized
+    assert torch.isfinite(quantized["fc1"][1].scale).all()
+    assert not torch.allclose(original_weight, model.fc1.weight)

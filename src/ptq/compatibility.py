@@ -95,6 +95,12 @@ def validate_supported_config(config: PTQRunConfig) -> None:
             raise ValueError(f"{config.method.name} requires weights enabled")
 
     if (
+        config.method.name is QuantizationMethod.SMOOTHQUANT
+        and not config.artifacts.activations.enabled
+    ):
+        raise ValueError("smoothquant requires activation quantization enabled")
+
+    if (
         config.method.name is QuantizationMethod.STATIC
         and config.artifacts.activations.enabled
         and config.calibration.num_samples <= 0
