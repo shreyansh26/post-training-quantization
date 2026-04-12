@@ -1,0 +1,64 @@
+model:
+  model_id: Qwen/Qwen3-4B
+  trust_remote_code: false
+  chat_template_source: huggingface
+runtime:
+  backend: vllm
+  enforce_eager: true
+  single_gpu_only: true
+  excluded_gpus: [0, 4, 5, 6, 7]
+  gpu_memory_utilization: 0.85
+  max_model_len: 4096
+method:
+  name: dynamic
+  smoothquant_alpha: 0.5
+  awq_clip_ratio: 1.0
+  gptq_damp_percent: 0.01
+  gptq_block_size: 128
+  activation_ordering: static
+artifacts:
+  weights:
+    enabled: true
+    dtype: int8
+    granularity: channel
+    symmetric: true
+  activations:
+    enabled: true
+    dtype: int8
+    granularity: token
+    symmetric: true
+  attention:
+    enabled: false
+    dtype: none
+    granularity: none
+    symmetric: true
+  kv_cache:
+    enabled: false
+    dtype: none
+    granularity: none
+    symmetric: true
+calibration:
+  dataset: HuggingFaceH4/ultrachat_200k
+  split: train_sft
+  num_samples: 0
+  max_sequence_length: 256
+  batch_size: 1
+  seed: 42
+  shuffle: false
+export:
+  output_root: /mnt/ssd2/shreyansh/ptq_experiments/artifacts
+  format: compressed-tensors
+  require_vllm_compatibility: true
+  prefer_hf_compatibility: true
+evaluation:
+  mode: dev
+  tasks: [gsm8k, ifeval, mmlu]
+  use_vllm: true
+  cache_baseline: false
+  dev_limit: 10
+  lm_eval_enable_thinking: false
+  lm_eval_max_gen_toks: 512
+logging:
+  metrics_dir: .
+  sanity_prompts_file: prompts/sanity_prompts.txt
+  save_lm_eval_raw_json: true
