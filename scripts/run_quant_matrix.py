@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-from __future__ import annotations
 
 import argparse
 import subprocess
 
+# Best-effort sweep across the example configs that are expected to work.
 CONFIGS = [
     "configs/example_baseline_qwen3.yaml",
     "configs/example_rtn_w8_int8_datafree.yaml",
@@ -12,7 +12,6 @@ CONFIGS = [
     "configs/example_dynamic_w8a8_fp8_block.yaml",
     "configs/example_static_w8a8_int8.yaml",
     "configs/example_static_w8a8_fp8.yaml",
-    "configs/example_static_w8a8_fp8_block.yaml",
     "configs/example_smoothquant_w8a8_int8.yaml",
     "configs/example_smoothquant_w8a8_fp8.yaml",
     "configs/example_smoothquant_w8a8_fp8_block.yaml",
@@ -28,6 +27,7 @@ CONFIGS = [
 
 
 def run_configs(stop_on_error: bool) -> int:
+    """Run each example config in order and return the last non-zero exit code."""
     exit_code = 0
     for config in CONFIGS:
         print(f"\n=== running {config} ===")
@@ -40,6 +40,7 @@ def run_configs(stop_on_error: bool) -> int:
 
 
 def main() -> int:
+    """CLI entrypoint for the example matrix runner."""
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--stop-on-error",

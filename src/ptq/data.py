@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from collections.abc import Iterable
 from typing import Any
 
@@ -13,6 +11,7 @@ def _to_chat_text(
     sample: dict[str, Any],
     tokenizer: PreTrainedTokenizerBase,
 ) -> str:
+    """Normalize a dataset row into plain text for calibration."""
     if "messages" in sample and sample["messages"] is not None:
         messages = sample["messages"]
         if isinstance(messages, list):
@@ -34,6 +33,7 @@ def load_calibration_texts(
     calibration: CalibrationSettings,
     tokenizer: PreTrainedTokenizerBase,
 ) -> list[str]:
+    """Load and render the configured calibration slice as plain text prompts."""
     split_expr = f"{calibration.split}[:{calibration.num_samples}]"
     dataset = load_dataset(calibration.dataset, split=split_expr)
     if calibration.shuffle:
@@ -43,5 +43,6 @@ def load_calibration_texts(
 
 
 def batched_texts(texts: list[str], batch_size: int) -> Iterable[list[str]]:
+    """Yield consecutive batches without copying more than necessary."""
     for start in range(0, len(texts), batch_size):
         yield texts[start : start + batch_size]

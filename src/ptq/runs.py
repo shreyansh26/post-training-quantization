@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import hashlib
 import json
 from datetime import UTC, datetime
@@ -12,6 +10,8 @@ from ptq.config import PTQRunConfig, RunStatus
 
 
 class RunMetadata(BaseModel):
+    """Persistent metadata stored alongside each exported run artifact."""
+
     model_config = ConfigDict(extra="forbid")
 
     run_id: str
@@ -25,10 +25,12 @@ class RunMetadata(BaseModel):
 
 
 def normalized_config_dict(config: PTQRunConfig) -> dict[str, Any]:
+    """Serialize a config into a stable JSON-compatible mapping."""
     return config.model_dump(mode="json")
 
 
 def config_digest(config: PTQRunConfig) -> str:
+    """Return a stable digest used for deterministic run identity."""
     payload = json.dumps(
         normalized_config_dict(config),
         sort_keys=True,
@@ -38,11 +40,13 @@ def config_digest(config: PTQRunConfig) -> str:
 
 
 def generate_run_id(config: PTQRunConfig, now: datetime | None = None) -> str:
+    """Generate the user-facing run identifier from the config digest."""
     del now
     return config_digest(config)[:10]
 
 
 def artifact_dir_for_run(config: PTQRunConfig, run_id: str) -> Path:
+    """Return the directory where this run's artifacts should be written."""
     model_name = config.model.model_id.rsplit("/", maxsplit=1)[-1]
     return config.export.output_root / model_name / config.method.name / run_id
 
@@ -54,6 +58,7 @@ def build_run_metadata(
     error: str | None = None,
     model_ref: str | None = None,
 ) -> RunMetadata:
+    """Build a fresh metadata record for the current pipeline state."""
     return RunMetadata(
         run_id=run_id,
         created_at_utc=datetime.now(UTC).isoformat(),
@@ -67,6 +72,7 @@ def build_run_metadata(
 
 
 def write_run_metadata(metadata: RunMetadata) -> Path:
+    """Persist run metadata next to the produced artifacts."""
     metadata.artifact_dir.mkdir(parents=True, exist_ok=True)
     target = metadata.artifact_dir / "run_metadata.json"
     target.write_text(
@@ -77,10 +83,12 @@ def write_run_metadata(metadata: RunMetadata) -> Path:
 
 
 def load_run_metadata(path: Path) -> RunMetadata:
+    """Load a metadata file that was previously written by the pipeline."""
     return RunMetadata.model_validate_json(path.read_text(encoding="utf-8"))
 
 
 def resolve_run_metadata(output_root: Path, run_id: str) -> RunMetadata:
+    """Locate metadata for a run ID under the configured artifact root."""
     pattern = f"*/*/{run_id}/run_metadata.json"
     matches = sorted(output_root.glob(pattern))
     if not matches:
@@ -95,10 +103,6 @@ def resolve_run_metadata(output_root: Path, run_id: str) -> RunMetadata:
     return load_run_metadata(matches[0])
 
 
-def run_id_from_metadata(metadata: RunMetadata) -> str:
-    return metadata.run_id
-
-
 def transition_run_metadata(
     metadata: RunMetadata,
     status: RunStatus,
@@ -106,6 +110,7 @@ def transition_run_metadata(
     error: str | None = None,
     model_ref: str | None = None,
 ) -> RunMetadata:
+    """Return an updated metadata record for a pipeline state transition."""
     return metadata.model_copy(
         update={
             "status": status,

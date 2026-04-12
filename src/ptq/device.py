@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import csv
 import os
 import subprocess
@@ -8,6 +6,8 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class DeviceChoice:
+    """The chosen physical GPU and the logical torch device exposed to the run."""
+
     torch_device: str
     cuda_index: int | None
 

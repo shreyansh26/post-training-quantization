@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import json
 import os
 import subprocess
@@ -13,6 +11,7 @@ from ptq.config import PTQRunConfig
 
 
 def load_sanity_prompts(path: Path) -> list[str]:
+    """Load the non-empty sanity prompts used for quick qualitative checks."""
     prompts = []
     for line in path.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -27,6 +26,7 @@ def run_vllm_sanity_generation(
     config: PTQRunConfig,
     output_path: Path,
 ) -> None:
+    """Render chat prompts and persist short deterministic vLLM generations."""
     tokenizer = AutoTokenizer.from_pretrained(
         model_ref,
         trust_remote_code=config.model.trust_remote_code,
@@ -78,6 +78,7 @@ def run_vllm_sanity_generation(
 
 
 def _find_lm_eval_results_json(path: Path) -> Path:
+    """Resolve the final ``lm-eval`` JSON artifact from a file or directory."""
     if path.is_file():
         return path
     candidates = sorted(path.glob("**/*.json"))
@@ -87,6 +88,7 @@ def _find_lm_eval_results_json(path: Path) -> Path:
 
 
 def _collect_numeric_metrics(task_metrics: dict[str, Any]) -> dict[str, float]:
+    """Drop non-scalar lm-eval fields so the CSV logger stays uniform."""
     selected: dict[str, float] = {}
     for key, value in task_metrics.items():
         if isinstance(value, (float, int)):
@@ -99,6 +101,7 @@ def run_lm_eval_vllm(
     config: PTQRunConfig,
     output_dir: Path,
 ) -> tuple[dict[str, dict[str, float]], Path]:
+    """Run the configured lm-eval task set against vLLM and collect scalars."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
     model_args = ",".join(

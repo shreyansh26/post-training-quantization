@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
 from math import ceil
 from pathlib import Path
@@ -32,12 +30,15 @@ from ptq.data import batched_texts
 
 @dataclass
 class ModuleActivationStats:
+    """Per-linear activation statistics collected during calibration."""
+
     global_absmax: float
     channel_absmax: torch.Tensor
     channel_sq_mean: torch.Tensor
 
 
 def _dtype_to_quant_type(dtype: QuantizationDType) -> QuantizationType:
+    """Map the repo's dtype enum to compressed-tensors' quantization type."""
     if dtype is QuantizationDType.INT8:
         return QuantizationType.INT
     if dtype is QuantizationDType.FP8:
@@ -48,6 +49,7 @@ def _dtype_to_quant_type(dtype: QuantizationDType) -> QuantizationType:
 def _weight_strategy(
     settings: ArtifactQuantizationSettings,
 ) -> tuple[QuantizationStrategy, list[int] | None]:
+    """Translate weight granularity settings into compressed-tensors strategy."""
     if settings.granularity is QuantizationGranularity.TENSOR:
         return QuantizationStrategy.TENSOR, None
     if settings.granularity is QuantizationGranularity.CHANNEL:
@@ -65,6 +67,7 @@ def _weight_strategy(
 def _activation_strategy(
     settings: ArtifactQuantizationSettings,
 ) -> QuantizationStrategy:
+    """Translate activation granularity settings into export strategy enums."""
     if settings.granularity is QuantizationGranularity.TOKEN:
         return QuantizationStrategy.TOKEN
     if settings.granularity is QuantizationGranularity.GROUP:
@@ -82,6 +85,7 @@ def _build_quant_args(
     dynamic: bool,
     for_weights: bool,
 ) -> QuantizationArgs | None:
+    """Build a compressed-tensors quantization spec for one artifact family."""
     if not settings.enabled:
         return None
 
@@ -103,6 +107,7 @@ def _build_quant_args(
 
 
 def _quantization_format_for_config(config: PTQRunConfig) -> str:
+    """Infer the export format label expected by compressed-tensors."""
     enabled_dtypes = []
     for name in ("weights", "activations", "attention", "kv_cache"):
         artifact = getattr(config.artifacts, name)
@@ -120,6 +125,7 @@ def _quantization_format_for_config(config: PTQRunConfig) -> str:
 
 
 def build_quantization_config(config: PTQRunConfig) -> QuantizationConfig:
+    """Build the compressed-tensors config applied before parameter export."""
     dynamic_activations = config.method.name is QuantizationMethod.DYNAMIC
 
     weights = _build_quant_args(
@@ -177,6 +183,7 @@ def _calculate_scale_zp(
     values: torch.Tensor,
     args: QuantizationArgs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Convert observed ranges into scale and zero-point tensors."""
     q_min, q_max = calculate_range(args, values.device)
     q_min = float(q_min.item())
     q_max = float(q_max.item())
@@ -202,6 +209,7 @@ def _reshape_for_weight_scale(
     group_size: int | None,
     block_structure: list[int] | None,
 ) -> torch.Tensor:
+    """Reduce a weight matrix into the shape expected for serialized scales."""
     if strategy == QuantizationStrategy.TENSOR:
         return weight.reshape(1)
 
@@ -241,6 +249,7 @@ def _reshape_for_weight_scale(
 
 
 def _set_module_param(module: torch.nn.Module, name: str, value: torch.Tensor) -> None:
+    """Safely copy exported quantization tensors into an instrumented module."""
     if not hasattr(module, name):
         return
     parameter = getattr(module, name)
@@ -261,6 +270,7 @@ def collect_activation_statistics(
     config: PTQRunConfig,
     device: str,
 ) -> dict[str, ModuleActivationStats]:
+    """Collect calibration statistics from dense linear inputs before quantization."""
     stats: dict[str, dict[str, torch.Tensor | int | float]] = {}
     hooks = []
 
@@ -269,6 +279,7 @@ def collect_activation_statistics(
             continue
 
         def pre_hook(mod, args, _name=name):
+            del mod
             inputs = args[0]
             if not isinstance(inputs, torch.Tensor):
                 return
@@ -343,6 +354,7 @@ def _weight_importance(
     stats: dict[str, ModuleActivationStats],
     config: PTQRunConfig,
 ) -> torch.Tensor | None:
+    """Derive method-specific weighting signals from calibration statistics."""
     if module_name not in stats:
         return None
     module_stats = stats[module_name]
@@ -365,6 +377,7 @@ def populate_weight_quantization_parameters(
     config: PTQRunConfig,
     activation_stats: dict[str, ModuleActivationStats],
 ) -> None:
+    """Populate serialized weight scales and zero-points after instrumentation."""
     for name, module in model.named_modules():
         scheme = getattr(module, "quantization_scheme", None)
         if scheme is None or scheme.weights is None:
@@ -396,6 +409,7 @@ def _activation_tensor_for_strategy(
     strategy: QuantizationStrategy,
     group_size: int | None,
 ) -> torch.Tensor:
+    """Project activation stats into the serialized shape for each strategy."""
     channel_absmax = stat.channel_absmax.to(torch.float32)
     if strategy == QuantizationStrategy.TENSOR:
         return torch.tensor([stat.global_absmax], dtype=torch.float32)
@@ -416,6 +430,7 @@ def populate_static_activation_parameters(
     model: torch.nn.Module,
     activation_stats: dict[str, ModuleActivationStats],
 ) -> None:
+    """Populate frozen activation scales for static quantization exports."""
     for name, module in model.named_modules():
         if name not in activation_stats:
             continue
@@ -442,6 +457,7 @@ def prepare_model_for_quantization(
     calibration_texts: list[str],
     device: str,
 ) -> QuantizationConfig:
+    """Collect stats on the dense model, then instrument and populate scales."""
     activation_stats = collect_activation_statistics(
         model=model,
         tokenizer=tokenizer,
@@ -470,6 +486,7 @@ def export_quantized_model(
     save_dir: Path,
     quantization_format: str,
 ) -> Path:
+    """Write a model artifact that both HF and vLLM can load."""
     save_dir.mkdir(parents=True, exist_ok=True)
     compressor = ModelCompressor.from_pretrained_model(
         model,

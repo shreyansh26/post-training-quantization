@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -36,12 +34,15 @@ from ptq.runs import (
 
 @dataclass(frozen=True)
 class RunOutcome:
+    """Minimal summary returned after a pipeline run completes."""
+
     run_id: str
     artifact_dir: Path
     model_ref: str
 
 
 def _baseline_config(config: PTQRunConfig) -> PTQRunConfig:
+    """Clone a config into the dense baseline variant used for cached comparisons."""
     disabled = {
         "enabled": False,
         "dtype": QuantizationDType.NONE,
@@ -73,6 +74,7 @@ def _write_metrics(
     model_ref: str,
     metrics: dict[str, dict[str, float]],
 ) -> None:
+    """Append or update per-task metric CSV rows for a completed run."""
     for task, task_metrics in metrics.items():
         csv_path = config.logging.metrics_dir / f"metrics_{task}.csv"
         rows = [
@@ -94,6 +96,7 @@ def _run_eval_and_sanity(
     artifact_dir: Path,
     model_ref: str,
 ) -> None:
+    """Run the qualitative sanity pass and the lm-eval task suite."""
     prompts = load_sanity_prompts(config.logging.sanity_prompts_file)
     sanity_out = artifact_dir / "sanity_outputs.json"
     run_vllm_sanity_generation(
@@ -114,6 +117,7 @@ def _run_eval_and_sanity(
 
 
 def _ensure_baseline_if_needed(config: PTQRunConfig) -> None:
+    """Materialize a cached baseline once per model/task combination."""
     if (
         config.method.name is QuantizationMethod.BASELINE
         or not config.evaluation.cache_baseline
@@ -143,6 +147,7 @@ def _export_quantized_artifact(
     artifact_dir: Path,
     device: str,
 ) -> str:
+    """Load, calibrate, quantize, and export the requested model artifact."""
     model, tokenizer = load_model_and_tokenizer(
         config.model,
         device=device,
@@ -169,6 +174,7 @@ def _export_quantized_artifact(
 
 
 def run_pipeline(config: PTQRunConfig, ensure_baseline: bool = True) -> RunOutcome:
+    """Execute the full PTQ pipeline for one config on a single selected device."""
     validate_supported_config(config)
 
     device_choice = select_single_device(config.runtime.excluded_gpus)
@@ -189,6 +195,8 @@ def run_pipeline(config: PTQRunConfig, ensure_baseline: bool = True) -> RunOutco
     write_run_metadata(metadata)
 
     try:
+        # Baseline runs evaluate the original HF model directly, while all
+        # quantized methods materialize an exported artifact first.
         if config.method.name is QuantizationMethod.BASELINE:
             model_ref = config.model.model_id
         else:
