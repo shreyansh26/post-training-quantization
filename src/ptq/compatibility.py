@@ -58,8 +58,6 @@ def _validate_enabled_artifact(
 
 
 def validate_supported_config(config: PTQRunConfig) -> None:
-    if not config.runtime.single_gpu_only:
-        raise ValueError("only single-GPU execution is supported")
     if config.runtime.backend is not RuntimeBackend.VLLM:
         raise ValueError("vLLM is the only supported runtime backend")
 

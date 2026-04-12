@@ -18,9 +18,8 @@ def _base_config(tmp_path: Path, method: str = "baseline") -> PTQRunConfig:
             },
             "runtime": {
                 "backend": "vllm",
+                "gpu_id": 0,
                 "enforce_eager": True,
-                "single_gpu_only": True,
-                "excluded_gpus": [6, 7],
             },
             "method": {"name": method},
             "artifacts": {

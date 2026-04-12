@@ -105,9 +105,8 @@ def _static_fp8_config() -> PTQRunConfig:
             },
             "runtime": {
                 "backend": "vllm",
+                "gpu_id": 0,
                 "enforce_eager": True,
-                "single_gpu_only": True,
-                "excluded_gpus": [6, 7],
                 "gpu_memory_utilization": 0.2,
                 "max_model_len": 128,
             },

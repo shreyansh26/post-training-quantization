@@ -13,9 +13,8 @@ def _base_config() -> dict:
         },
         "runtime": {
             "backend": "vllm",
+            "gpu_id": 0,
             "enforce_eager": True,
-            "single_gpu_only": True,
-            "excluded_gpus": [6, 7],
         },
         "method": {"name": "dynamic"},
         "artifacts": {

@@ -63,14 +63,15 @@ class RuntimeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     backend: RuntimeBackend = RuntimeBackend.VLLM
+    gpu_id: int
     enforce_eager: bool = True
-    single_gpu_only: bool = True
-    excluded_gpus: list[int] = Field(default_factory=lambda: [6, 7])
     gpu_memory_utilization: float = 0.2
     max_model_len: int = 4096
 
     @model_validator(mode="after")
     def validate_runtime(self) -> Self:
+        if self.gpu_id < 0:
+            raise ValueError("gpu_id must be non-negative")
         if self.gpu_memory_utilization <= 0.0 or self.gpu_memory_utilization > 1.0:
             raise ValueError("gpu_memory_utilization must be in (0, 1]")
         if self.max_model_len <= 0:

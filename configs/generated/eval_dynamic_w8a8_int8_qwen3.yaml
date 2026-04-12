@@ -4,9 +4,8 @@ model:
   chat_template_source: huggingface
 runtime:
   backend: vllm
+  gpu_id: 1
   enforce_eager: true
-  single_gpu_only: true
-  excluded_gpus: [0, 4, 5, 6, 7]
   gpu_memory_utilization: 0.85
   max_model_len: 4096
 method:

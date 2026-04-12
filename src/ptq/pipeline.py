@@ -1,3 +1,4 @@
+import os
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,7 +12,6 @@ from ptq.config import (
     RunStatus,
 )
 from ptq.data import load_calibration_texts
-from ptq.device import configure_single_gpu_environment, select_single_device
 from ptq.eval import (
     load_sanity_prompts,
     run_lm_eval_vllm,
@@ -39,6 +39,13 @@ class RunOutcome:
     run_id: str
     artifact_dir: Path
     model_ref: str
+
+
+def _configure_gpu_environment(gpu_id: int) -> str:
+    """Restrict the process to one explicit physical GPU for torch and vLLM."""
+    os.environ["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+    os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
+    return "cuda:0"
 
 
 def _baseline_config(config: PTQRunConfig) -> PTQRunConfig:
@@ -177,8 +184,7 @@ def run_pipeline(config: PTQRunConfig, ensure_baseline: bool = True) -> RunOutco
     """Execute the full PTQ pipeline for one config on a single selected device."""
     validate_supported_config(config)
 
-    device_choice = select_single_device(config.runtime.excluded_gpus)
-    selected_device = configure_single_gpu_environment(device_choice)
+    selected_device = _configure_gpu_environment(config.runtime.gpu_id)
 
     if ensure_baseline:
         _ensure_baseline_if_needed(config)
