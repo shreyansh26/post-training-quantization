@@ -2,7 +2,7 @@
 name = "ptq"
 version = "0.1.0"
 description = "Lightweight post-training quantization experiments aligned with llm-compressor and vLLM"
-readme = "notes/plan_verified.md"
+readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "accelerate>=1.13.0",
