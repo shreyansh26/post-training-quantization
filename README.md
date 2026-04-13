@@ -17,6 +17,8 @@ Implemented and validated in this repo:
 - baseline inference
 - dynamic W8A8 (`fp8`, `int8`)
 - static W8A8 (`fp8`, `int8`)
+- dynamic KV-cache quantization (`fp8`)
+- static attention + KV-cache quantization (`fp8`)
 - SmoothQuant (`fp8`, `int8`)
 - AWQ (`int8`)
 - GPTQ (`int8`)
@@ -42,19 +44,19 @@ Current scope:
 The quantization code is intentionally split by responsibility rather than by
 "one file per algorithm family."
 
-- [src/ptq/quantization/compressed.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/compressed.py:1)
+- [src/ptq/quantization/quantization_pipeline.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/quantization_pipeline.py:1)
   Thin orchestration layer for the production quantization/export path. It runs
   method preparation, collects calibration stats, applies the
   `compressed-tensors` instrumentation, populates frozen qparams, and exports an
   artifact that HF and `vLLM` can load.
-- [src/ptq/quantization/artifact_config.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/artifact_config.py:1)
+- [src/ptq/quantization/quantization_scheme.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/quantization_scheme.py:1)
   Builds artifact-level quantization configs for weights, activations,
   attention, and KV cache. This is where the orthogonal artifact combinations
   are assembled from YAML config.
-- [src/ptq/quantization/artifact_parameters.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/artifact_parameters.py:1)
+- [src/ptq/quantization/calibration_qparams.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/calibration_qparams.py:1)
   Collects calibration statistics and populates serialized scales / zero-points
   for the enabled artifacts after instrumentation.
-- [src/ptq/quantization/method_dispatch.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/method_dispatch.py:1)
+- [src/ptq/quantization/method_preparation.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/method_preparation.py:1)
   Dispatches method-specific preprocessing before the general artifact export
   path. This is where `smoothquant`, `awq`, and `gptq` hook into the pipeline.
 - [src/ptq/quantization/weight_only.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/weight_only.py:1)
@@ -72,6 +74,100 @@ The quantization code is intentionally split by responsibility rather than by
   This is not the production export path.
 - [src/ptq/quantization/primitives.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/primitives.py:1)
   Small tensor-level fake-quant helpers used by the simulation layer.
+
+## Quantization Flow
+
+For a production quantized run, the main flow is:
+
+1. `pipeline.py`
+   Loads the dense HF model, determines whether calibration data is needed, and
+   calls into the quantization pipeline.
+2. `method_preparation.py`
+   Runs any method-specific preprocessing before general quantization. For
+   `dynamic` and `static` W8A8 this is a no-op. For `smoothquant`, `awq`, and
+   `gptq`, this is where those method-specific transformations happen.
+3. `quantization_scheme.py`
+   Converts the YAML artifact settings into the `compressed-tensors`
+   `QuantizationConfig`. This is where weights, activations, attention, and KV
+   cache are combined orthogonally.
+4. `quantization_pipeline.py`
+   Applies the quantization scheme to the in-memory model with
+   `apply_quantization_config(...)`.
+5. `calibration_qparams.py`
+   Computes and writes the frozen qparams needed by the exported artifact:
+   weight scales / zero-points, and for static activation quantization,
+   `input_scale` / `input_zero_point`. For static attention and KV-cache
+   quantization, this is also where `q_scale`, `k_scale`, and `v_scale` are
+   calibrated and serialized.
+6. `quantization_pipeline.py`
+   Exports the instrumented model through `ModelCompressor.compress(...)` into a
+   HF- and `vLLM`-loadable artifact.
+
+For dynamic W8A8 specifically:
+
+- weights are quantized offline during export
+- activations are marked as dynamically quantized in the exported scheme
+- `vLLM` performs the actual dynamic activation quantization at inference time
+
+For static W8A8 specifically:
+
+- weights are quantized offline during export
+- activation qparams are computed from calibration data and exported per layer
+- `vLLM` reads those frozen activation qparams at inference time
+
+For attention and KV cache in the current runtime stack:
+
+- dynamic KV-cache quantization is supported and composes cleanly with weight and
+  activation quantization
+- static attention quantization is calibrated offline and exported through
+  `q_scale`, `k_scale`, and `v_scale`
+- `vLLM` currently couples attention quantization with KV-cache quantization, so
+  the repo requires matching `attention` and `kv_cache` settings when both are
+  enabled
+- dynamic attention quantization is not exposed because the installed
+  `compressed-tensors` + `vLLM` path does not support it cleanly
+
+## Compatibility Matrix
+
+The YAML surface treats quantization artifacts separately, but the actual
+runtime contract is slightly stricter than a fully orthogonal matrix.
+
+| Artifact | Dynamic | Static-like (`static`, `smoothquant`, `awq`, `gptq`) | Supported granularity in this repo | Notes |
+|---|---|---|---|---|
+| weights | yes | yes | `tensor`, `channel`, `group`, `block` | `block` is FP8-only and requires grouped dynamic activations for W8A8 |
+| activations | yes | yes | dynamic: `token`, `group`; static-like: `tensor` | static `token` and static `group` are rejected |
+| attention | no | yes | `tensor` | must be enabled together with `kv_cache` using identical settings |
+| kv_cache | yes | yes | `tensor` | vLLM also has an internal `attn_head` mode, but this repo does not expose it yet |
+
+Practical combinations:
+
+- `weights + activations` is the standard W8A8 path
+- `weights + activations + kv_cache` is supported for dynamic FP8 and validated
+- `weights + activations + attention + kv_cache` is supported for static FP8 and validated
+- `attention` by itself is intentionally rejected because `vLLM` couples it with KV-cache quantization
+
+Valid combinations by method family:
+
+- dynamic:
+  - `weights`
+  - `weights + activations`
+  - `weights + activations + kv_cache`
+- static-like (`static`, `smoothquant`, `awq`, `gptq`):
+  - `weights`
+  - `weights + activations`
+  - `weights + activations + kv_cache`
+  - `weights + activations + attention + kv_cache`
+
+Important limitation:
+
+- `weights + activations + attention + kv_cache` is not supported in `dynamic`
+  mode in the current `compressed-tensors` + `vLLM` stack, because attention
+  quantization does not have a clean dynamic runtime path there.
+
+Reference validated runs:
+
+- dynamic FP8 `weights+activations+kv_cache`: `run_id: d2d17f88a6`
+- static FP8 `weights+activations+attention+kv_cache`: `run_id: e50f60b86a`
 
 ## Setup
 
@@ -182,6 +278,44 @@ Reference dev run:
 - `gsm8k flexible-extract: 1.0`
 - `ifeval prompt_level_strict_acc: 0.7`
 - `mmlu acc: 0.5667`
+
+### Dynamic W8A8 FP8 + KV Cache FP8
+
+```bash
+uv run ptq validate-config configs/example_dynamic_w8a8_fp8_qwen3.yaml
+uv run ptq run configs/example_dynamic_w8a8_fp8_qwen3.yaml
+```
+
+To enable KV-cache quantization as validated in the smoke run, copy the config
+and set:
+
+- `artifacts.kv_cache.enabled: true`
+- `artifacts.kv_cache.dtype: fp8`
+- `artifacts.kv_cache.granularity: tensor`
+
+Reference smoke run:
+
+- `run_id: d2d17f88a6`
+- artifact combination: `weights+activations+kv_cache`
+- `gsm8k flexible-extract: 1.0`
+- `gsm8k strict-match: 1.0`
+
+### Static W8A8 FP8 + Attention FP8 + KV Cache FP8
+
+Use the dedicated example config:
+
+```bash
+uv run ptq validate-config configs/example_attention_kv_fp8.yaml
+uv run ptq run configs/example_attention_kv_fp8.yaml
+```
+
+Reference smoke run:
+
+- `run_id: e50f60b86a`
+- artifact combination: `weights+activations+attention+kv_cache`
+- `gsm8k flexible-extract: 1.0`
+- `gsm8k strict-match: 0.0`
+- sanity outputs are coherent; the strict mismatch is answer-formatting drift, not gibberish
 
 ### Static W8A8 INT8
 
@@ -334,5 +468,8 @@ Metrics are appended or updated in:
 - calibration uses `HuggingFaceH4/ultrachat_200k`
 - dynamic methods do not use calibration samples
 - static activation quantization requires calibration
+- static attention and static KV-cache quantization require calibration
+- the current `vLLM` runtime couples attention quantization with KV-cache quantization
+- dynamic attention quantization is intentionally disabled in the validator
 - chat templating follows the official Hugging Face Qwen template path used by the repo
 - the hard inference requirement is `vLLM`
