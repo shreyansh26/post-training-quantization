@@ -6,7 +6,7 @@ runtime:
   backend: vllm
   gpu_id: 0
   enforce_eager: true
-  gpu_memory_utilization: 0.2
+  gpu_memory_utilization: 0.85
   max_model_len: 4096
 method:
   name: gptq
@@ -22,10 +22,10 @@ artifacts:
     granularity: channel
     symmetric: true
   activations:
-    enabled: false
-    dtype: none
-    granularity: none
-    symmetric: true
+    enabled: true
+    dtype: int8
+    granularity: tensor
+    symmetric: false
   attention:
     enabled: false
     dtype: none
@@ -39,8 +39,8 @@ artifacts:
 calibration:
   dataset: HuggingFaceH4/ultrachat_200k
   split: train_sft
-  num_samples: 256
-  max_sequence_length: 512
+  num_samples: 200
+  max_sequence_length: 256
   batch_size: 1
   seed: 42
   shuffle: false
@@ -51,10 +51,15 @@ export:
   prefer_hf_compatibility: true
 evaluation:
   mode: dev
-  tasks: [gsm8k, ifeval, mmlu]
+  tasks:
+  - gsm8k
+  - ifeval
+  - mmlu
   use_vllm: true
-  cache_baseline: true
+  cache_baseline: false
   dev_limit: 10
+  lm_eval_enable_thinking: false
+  lm_eval_max_gen_toks: 512
 logging:
   metrics_dir: .
   sanity_prompts_file: prompts/sanity_prompts.txt

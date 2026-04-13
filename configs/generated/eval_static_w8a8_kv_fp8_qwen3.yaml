@@ -4,10 +4,10 @@ model:
   chat_template_source: huggingface
 runtime:
   backend: vllm
-  gpu_id: 0
+  gpu_id: 1
   enforce_eager: true
-  gpu_memory_utilization: 0.2
-  max_model_len: 2048
+  gpu_memory_utilization: 0.85
+  max_model_len: 4096
 method:
   name: static
   smoothquant_alpha: 0.5
@@ -18,23 +18,23 @@ method:
 artifacts:
   weights:
     enabled: true
-    dtype: int8
+    dtype: fp8
     granularity: channel
     symmetric: true
   activations:
     enabled: true
-    dtype: int8
+    dtype: fp8
     granularity: tensor
-    symmetric: false
+    symmetric: true
   attention:
     enabled: false
     dtype: none
     granularity: none
     symmetric: true
   kv_cache:
-    enabled: false
-    dtype: none
-    granularity: none
+    enabled: true
+    dtype: fp8
+    granularity: tensor
     symmetric: true
 calibration:
   dataset: HuggingFaceH4/ultrachat_200k
@@ -50,8 +50,11 @@ export:
   require_vllm_compatibility: true
   prefer_hf_compatibility: true
 evaluation:
-  mode: dev
-  tasks: [gsm8k]
+  mode: full
+  tasks:
+  - gsm8k
+  - ifeval
+  - mmlu
   use_vllm: true
   cache_baseline: false
   dev_limit: 10

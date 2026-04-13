@@ -25,7 +25,7 @@ artifacts:
     enabled: true
     dtype: int8
     granularity: tensor
-    symmetric: true
+    symmetric: false
   attention:
     enabled: false
     dtype: none
@@ -50,8 +50,11 @@ export:
   require_vllm_compatibility: true
   prefer_hf_compatibility: true
 evaluation:
-  mode: dev
-  tasks: [gsm8k, ifeval, mmlu]
+  mode: full
+  tasks:
+  - gsm8k
+  - ifeval
+  - mmlu
   use_vllm: true
   cache_baseline: false
   dev_limit: 10

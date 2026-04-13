@@ -205,6 +205,43 @@ The config controls:
 
 Before running, edit `runtime.gpu_id` in the YAML to a free GPU on your machine.
 
+## Benchmark Snapshot
+
+Full-eval metrics below are reported by quantization description rather than run
+ID. The task metrics tracked in this repo are:
+
+- `gsm8k`: `exact_match,strict-match` / `exact_match,flexible-extract`
+- `ifeval`: `prompt_level_strict_acc,none` / `inst_level_strict_acc,none`
+- `mmlu`: `acc,none`
+
+| Quantization | GSM8K strict / flexible | IFEval prompt / inst strict | MMLU acc |
+|---|---:|---:|---:|
+| Dynamic W8A8 FP8 | `0.6626 / 0.8400` | `0.7985 / 0.8597` | `0.5446` |
+| Dynamic W8A8 INT8 | `0.6027 / 0.8438` | `0.7930 / 0.8549` | `0.5638` |
+| Static W8A8 FP8 | `0.6611 / 0.8287` | `0.8096 / 0.8645` | `0.5474` |
+| Static W8A8 INT8 | `0.0061 / 0.0705` | `0.2458 / 0.3717` | `0.2374` |
+| Dynamic W8A8 FP8 + KV cache FP8 | `0.6664 / 0.8408` | `0.7930 / 0.8561` | `0.5713` |
+| Dynamic W8A8 INT8 + KV cache INT8 | `0.5565 / 0.8309` | `0.7930 / 0.8597` | `0.5611` |
+| Static W8A8 FP8 + KV cache FP8 | `0.7005 / 0.8461` | `0.8004 / 0.8561` | `0.5345` |
+| Static W8A8 INT8 + KV cache INT8 | `0.0000 / 0.0546` | `0.2015 / 0.3237` | `0.2314` |
+| Static W8A8 FP8 + attention FP8 + KV cache FP8 | `0.7066 / 0.8491` | `0.7893 / 0.8525` | `0.5246` |
+| Static W8A8 INT8 + attention INT8 + KV cache INT8 | `0.0008 / 0.0758` | `0.1756 / 0.3141` | `0.2321` |
+| SmoothQuant W8A8 FP8 | `0.6535 / 0.8461` | `0.8078 / 0.8633` | `0.5397` |
+| SmoothQuant W8A8 INT8 | `0.0053 / 0.1221` | `0.2366 / 0.3741` | `0.2317` |
+| AWQ W8A8 INT8 | `0.0045 / 0.1198` | `0.2514 / 0.3657` | `0.2342` |
+| SmoothQuant + GPTQ W8A8 INT8 | `0.0159 / 0.1994` | `0.2957 / 0.4317` | `0.2336` |
+
+Current INT8 takeaway:
+
+- dynamic W8A8 INT8 is strong and competitive with dynamic FP8
+- dynamic W8A8 INT8 + KV cache INT8 is also healthy
+- the current static-like INT8 family is valid but underperforms badly in this repo:
+  `static`, `static + kv`, `static + attention + kv`, `smoothquant`, and `awq`
+- a follow-up investigation fixed one real asymmetric activation calibration bug,
+  but smoke reruns still show low-quality outputs for static-like INT8
+- that means the remaining gap is most likely recipe / algorithm fidelity rather
+  than artifact corruption or a broken `vLLM` load path
+
 ## Best Validated Configs
 
 These are the canonical configs for the strongest validated run per method family in this repo.
@@ -225,12 +262,11 @@ uv run ptq validate-config configs/generated/eval_dynamic_w8a8_fp8_qwen3.yaml
 uv run ptq run configs/generated/eval_dynamic_w8a8_fp8_qwen3.yaml
 ```
 
-Reference dev run:
+Metrics:
 
-- `run_id: a4583c303f`
-- `gsm8k flexible-extract: 0.8`
-- `ifeval prompt_level_strict_acc: 0.8`
-- `mmlu acc: 0.5825`
+- `gsm8k`: `0.6626 strict` / `0.8400 flexible`
+- `ifeval`: `0.7985 prompt strict` / `0.8597 inst strict`
+- `mmlu`: `0.5446`
 
 ### Dynamic W8A8 FP8 Block
 
@@ -244,12 +280,11 @@ uv run ptq validate-config configs/generated/eval_dynamic_w8a8_fp8_block_qwen3.y
 uv run ptq run configs/generated/eval_dynamic_w8a8_fp8_block_qwen3.yaml
 ```
 
-Reference dev run:
+Metrics:
 
-- `run_id: e8fd400e60`
-- `gsm8k flexible-extract: 0.6`
-- `ifeval prompt_level_strict_acc: 0.8`
-- `mmlu acc: 0.5351`
+- `gsm8k`: `0.2 strict` / `0.6 flexible` on the validated dev slice
+- `ifeval`: `0.8 prompt strict` on the validated dev slice
+- `mmlu`: `0.5351` on the validated dev slice
 
 ### Dynamic W8A8 INT8
 
@@ -258,12 +293,11 @@ uv run ptq validate-config configs/generated/eval_dynamic_w8a8_int8_qwen3.yaml
 uv run ptq run configs/generated/eval_dynamic_w8a8_int8_qwen3.yaml
 ```
 
-Reference dev run:
+Metrics:
 
-- `run_id: a84ae91456`
-- `gsm8k flexible-extract: 0.9`
-- `ifeval prompt_level_strict_acc: 0.8`
-- `mmlu acc: 0.5632`
+- `gsm8k`: `0.6027 strict` / `0.8438 flexible`
+- `ifeval`: `0.7930 prompt strict` / `0.8549 inst strict`
+- `mmlu`: `0.5638`
 
 ### Static W8A8 FP8
 
@@ -272,50 +306,63 @@ uv run ptq validate-config configs/generated/eval_static_w8a8_fp8_qwen3.yaml
 uv run ptq run configs/generated/eval_static_w8a8_fp8_qwen3.yaml
 ```
 
-Reference dev run:
+Metrics:
 
-- `run_id: 0aadee2984`
-- `gsm8k flexible-extract: 1.0`
-- `ifeval prompt_level_strict_acc: 0.7`
-- `mmlu acc: 0.5667`
+- `gsm8k`: `0.6611 strict` / `0.8287 flexible`
+- `ifeval`: `0.8096 prompt strict` / `0.8645 inst strict`
+- `mmlu`: `0.5474`
 
 ### Dynamic W8A8 FP8 + KV Cache FP8
 
 ```bash
-uv run ptq validate-config configs/example_dynamic_w8a8_fp8_qwen3.yaml
-uv run ptq run configs/example_dynamic_w8a8_fp8_qwen3.yaml
+uv run ptq validate-config configs/generated/eval_dynamic_w8a8_kv_fp8_qwen3.yaml
+uv run ptq run configs/generated/eval_dynamic_w8a8_kv_fp8_qwen3.yaml
 ```
 
-To enable KV-cache quantization as validated in the smoke run, copy the config
-and set:
+Metrics:
 
-- `artifacts.kv_cache.enabled: true`
-- `artifacts.kv_cache.dtype: fp8`
-- `artifacts.kv_cache.granularity: tensor`
+- `gsm8k`: `0.6664 strict` / `0.8408 flexible`
+- `ifeval`: `0.7930 prompt strict` / `0.8561 inst strict`
+- `mmlu`: `0.5713`
 
-Reference smoke run:
+### Dynamic W8A8 INT8 + KV Cache INT8
 
-- `run_id: d2d17f88a6`
-- artifact combination: `weights+activations+kv_cache`
-- `gsm8k flexible-extract: 1.0`
-- `gsm8k strict-match: 1.0`
+```bash
+uv run ptq validate-config configs/generated/eval_dynamic_w8a8_kv_int8_qwen3.yaml
+uv run ptq run configs/generated/eval_dynamic_w8a8_kv_int8_qwen3.yaml
+```
+
+Metrics:
+
+- `gsm8k`: `0.5565 strict` / `0.8309 flexible`
+- `ifeval`: `0.7930 prompt strict` / `0.8597 inst strict`
+- `mmlu`: `0.5611`
 
 ### Static W8A8 FP8 + Attention FP8 + KV Cache FP8
 
-Use the dedicated example config:
-
 ```bash
-uv run ptq validate-config configs/example_attention_kv_fp8.yaml
-uv run ptq run configs/example_attention_kv_fp8.yaml
+uv run ptq validate-config configs/generated/eval_static_w8a8_attention_kv_fp8_qwen3.yaml
+uv run ptq run configs/generated/eval_static_w8a8_attention_kv_fp8_qwen3.yaml
 ```
 
-Reference smoke run:
+Metrics:
 
-- `run_id: e50f60b86a`
-- artifact combination: `weights+activations+attention+kv_cache`
-- `gsm8k flexible-extract: 1.0`
-- `gsm8k strict-match: 0.0`
-- sanity outputs are coherent; the strict mismatch is answer-formatting drift, not gibberish
+- `gsm8k`: `0.7066 strict` / `0.8491 flexible`
+- `ifeval`: `0.7893 prompt strict` / `0.8525 inst strict`
+- `mmlu`: `0.5246`
+
+### Static W8A8 FP8 + KV Cache FP8
+
+```bash
+uv run ptq validate-config configs/generated/eval_static_w8a8_kv_fp8_qwen3.yaml
+uv run ptq run configs/generated/eval_static_w8a8_kv_fp8_qwen3.yaml
+```
+
+Metrics:
+
+- `gsm8k`: `0.7005 strict` / `0.8461 flexible`
+- `ifeval`: `0.8004 prompt strict` / `0.8561 inst strict`
+- `mmlu`: `0.5345`
 
 ### Static W8A8 INT8
 
@@ -324,74 +371,122 @@ uv run ptq validate-config configs/generated/eval_static_w8a8_int8_qwen3.yaml
 uv run ptq run configs/generated/eval_static_w8a8_int8_qwen3.yaml
 ```
 
+Metrics:
+
+- `gsm8k`: `0.0061 strict` / `0.0705 flexible`
+- `ifeval`: `0.2458 prompt strict` / `0.3717 inst strict`
+- `mmlu`: `0.2374`
+
 Important note:
 
-- this path is implemented correctly and exports a valid model
+- the exported model is loadable by `vLLM`
 - outputs are coherent English, not gibberish
-- quality is materially worse than FP8 static in current form
+- a follow-up asymmetric activation calibration fix did not materially change the
+  qualitative result in smoke reruns
 
-Reference dev run:
+### Static W8A8 INT8 + KV Cache INT8
 
-- `run_id: c9a784c317`
-- `gsm8k flexible-extract: 0.0`
-- `ifeval prompt_level_strict_acc: 0.1`
-- `mmlu acc: 0.2649`
+```bash
+uv run ptq validate-config configs/generated/eval_static_w8a8_kv_int8_qwen3.yaml
+uv run ptq run configs/generated/eval_static_w8a8_kv_int8_qwen3.yaml
+```
+
+Metrics:
+
+- `gsm8k`: `0.0000 strict` / `0.0546 flexible`
+- `ifeval`: `0.2015 prompt strict` / `0.3237 inst strict`
+- `mmlu`: `0.2314`
+
+### Static W8A8 INT8 + Attention INT8 + KV Cache INT8
+
+```bash
+uv run ptq validate-config configs/generated/eval_static_w8a8_attention_kv_int8_qwen3.yaml
+uv run ptq run configs/generated/eval_static_w8a8_attention_kv_int8_qwen3.yaml
+```
+
+Metrics:
+
+- `gsm8k`: `0.0008 strict` / `0.0758 flexible`
+- `ifeval`: `0.1756 prompt strict` / `0.3141 inst strict`
+- `mmlu`: `0.2321`
 
 ### SmoothQuant FP8
 
 ```bash
-uv run ptq validate-config configs/example_smoothquant_w8a8_fp8.yaml
-uv run ptq run configs/example_smoothquant_w8a8_fp8.yaml
+uv run ptq validate-config configs/generated/eval_smoothquant_w8a8_fp8_qwen3.yaml
+uv run ptq run configs/generated/eval_smoothquant_w8a8_fp8_qwen3.yaml
 ```
 
-Reference smoke run:
+Metrics:
 
-- `run_id: d7e2456df1`
-- coherent sanity outputs
-- `gsm8k flexible-extract: 1.0` on `limit=2`
+- `gsm8k`: `0.6535 strict` / `0.8461 flexible`
+- `ifeval`: `0.8078 prompt strict` / `0.8633 inst strict`
+- `mmlu`: `0.5397`
 
 ### SmoothQuant INT8
 
 ```bash
-uv run ptq validate-config configs/example_smoothquant_w8a8_int8.yaml
-uv run ptq run configs/example_smoothquant_w8a8_int8.yaml
+uv run ptq validate-config configs/generated/eval_smoothquant_w8a8_int8_qwen3.yaml
+uv run ptq run configs/generated/eval_smoothquant_w8a8_int8_qwen3.yaml
 ```
 
-Reference smoke run:
+Metrics:
 
-- `run_id: c6fb9c3fcf`
-- coherent sanity outputs
-- `gsm8k flexible-extract: 0.5` on `limit=2`
+- `gsm8k`: `0.0053 strict` / `0.1221 flexible`
+- `ifeval`: `0.2366 prompt strict` / `0.3741 inst strict`
+- `mmlu`: `0.2317`
+
+Follow-up smoke after the asymmetric activation calibration fix:
+
+- `gsm8k`: `0.0 strict` / `0.2 flexible` on `limit=10`
+- `ifeval`: `0.1 prompt strict` / `0.2222 inst strict` on `limit=10`
+- `mmlu`: `0.2772` on `limit=10`
 
 ### AWQ INT8
 
-AWQ is currently validated as a weight-only method in this repo.
-
 ```bash
-uv run ptq validate-config configs/example_awq_w8a8_int8.yaml
-uv run ptq run configs/example_awq_w8a8_int8.yaml
+uv run ptq validate-config configs/generated/eval_awq_w8a8_int8_qwen3.yaml
+uv run ptq run configs/generated/eval_awq_w8a8_int8_qwen3.yaml
 ```
 
-Reference smoke run:
+Metrics:
 
-- `run_id: 665350b60d`
-- coherent sanity outputs
-- `gsm8k flexible-extract: 1.0` on `limit=2`
+- `gsm8k`: `0.0045 strict` / `0.1198 flexible`
+- `ifeval`: `0.2514 prompt strict` / `0.3657 inst strict`
+- `mmlu`: `0.2342`
+
+### SmoothQuant + GPTQ INT8
+
+This is the closest repo-local equivalent to the stronger llm-compressor INT8
+recipe shape: SmoothQuant preprocessing followed by GPTQ weight quantization,
+with static tensor activations.
+
+```bash
+uv run ptq validate-config configs/generated/eval_smoothquant_gptq_w8a8_int8_qwen3.yaml
+uv run ptq run configs/generated/eval_smoothquant_gptq_w8a8_int8_qwen3.yaml
+```
+
+Metrics:
+
+- `gsm8k`: `0.0159 strict` / `0.1994 flexible`
+- `ifeval`: `0.2957 prompt strict` / `0.4317 inst strict`
+- `mmlu`: `0.2336`
 
 ### GPTQ INT8
 
-GPTQ is currently validated as a weight-only method in this repo.
-
 ```bash
-uv run ptq validate-config configs/example_gptq_w8a8_int8.yaml
-uv run ptq run configs/example_gptq_w8a8_int8.yaml
+uv run ptq validate-config configs/generated/eval_gptq_w8a8_int8_qwen3.yaml
+uv run ptq run configs/generated/eval_gptq_w8a8_int8_qwen3.yaml
 ```
 
-Reference smoke run:
+Current state:
 
-- `run_id: 6d4cbf3646`
-- coherent sanity outputs
-- `gsm8k flexible-extract: 0.5` on `limit=2`
+- export succeeds
+- smoke validation produced coherent outputs
+- the plain GPTQ-only INT8 path does not yet have a completed full three-task
+  eval recorded in this README
+- the composed `smoothquant+gptq` INT8 path above does have a completed full
+  eval
 
 ## FP8 AWQ and GPTQ Issue
 

@@ -6,11 +6,12 @@ runtime:
   backend: vllm
   gpu_id: 0
   enforce_eager: true
-  gpu_memory_utilization: 0.2
-  max_model_len: 2048
+  gpu_memory_utilization: 0.85
+  max_model_len: 4096
 method:
-  name: static
-  smoothquant_alpha: 0.5
+  name: gptq
+  enable_smoothquant: true
+  smoothquant_alpha: 0.8
   awq_clip_ratio: 1.0
   gptq_damp_percent: 0.01
   gptq_block_size: 128
@@ -51,7 +52,10 @@ export:
   prefer_hf_compatibility: true
 evaluation:
   mode: dev
-  tasks: [gsm8k]
+  tasks:
+  - gsm8k
+  - ifeval
+  - mmlu
   use_vllm: true
   cache_baseline: false
   dev_limit: 10
