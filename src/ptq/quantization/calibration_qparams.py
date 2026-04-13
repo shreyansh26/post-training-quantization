@@ -1,4 +1,4 @@
-"""Artifact parameter collection and serialization helpers.
+"""Calibration-statistics and qparam population helpers.
 
 This module owns the calibration stats and qparam population steps used by the
 main quantization pipeline. It deliberately stays method-agnostic except for
@@ -10,11 +10,21 @@ from math import ceil
 
 import torch
 import torch.nn.functional as F
+from compressed_tensors.modeling.attention import (
+    initialize_hooked_attention,
+    register_query_hook,
+)
+from compressed_tensors.modeling.kvcache import (
+    initialize_hooked_kv_cache,
+    register_key_hook,
+    register_value_hook,
+)
 from compressed_tensors.quantization import DynamicType, QuantizationArgs
+from compressed_tensors.quantization.lifecycle.initialize import is_attention_module
 from compressed_tensors.quantization.utils import calculate_range
 from transformers import PreTrainedTokenizerBase
 
-from ptq.config import PTQRunConfig
+from ptq.config import PTQRunConfig, QuantizationMethod
 from ptq.data import batched_texts
 from ptq.quantization.weight_only import WeightQuantizationParameters
 
@@ -26,6 +36,15 @@ class ModuleActivationStats:
     global_absmax: float
     channel_absmax: torch.Tensor
     channel_sq_mean: torch.Tensor
+
+
+@dataclass
+class AttentionQKVStats:
+    """Per-attention-module calibration statistics for query, key, and value."""
+
+    q_absmax: float
+    k_absmax: float
+    v_absmax: float
 
 
 def strategy_name(args: QuantizationArgs) -> str:
@@ -119,13 +138,19 @@ def set_module_param(module: torch.nn.Module, name: str, value: torch.Tensor) ->
     parameter.data.copy_(value.to(parameter.device, dtype=parameter.dtype))
 
 
+def clear_module_param(module: torch.nn.Module, name: str) -> None:
+    """Drop a registered qparam when the runtime/export contract does not use it."""
+    if hasattr(module, name):
+        delattr(module, name)
+
+
 def collect_activation_statistics(
     model: torch.nn.Module,
     tokenizer: PreTrainedTokenizerBase,
     calibration_texts: list[str],
     config: PTQRunConfig,
     device: str,
-) -> dict[str, ModuleActivationStats]:
+    ) -> dict[str, ModuleActivationStats]:
     """Collect calibration statistics from dense linear inputs before quantization."""
     stats: dict[str, dict[str, torch.Tensor | int | float]] = {}
     hooks = []
@@ -204,6 +229,112 @@ def collect_activation_statistics(
     return results
 
 
+def _max_abs_from_attention_tensor(tensor: torch.Tensor, name: str) -> float:
+    """Reduce one observed attention tensor to a scalar static calibration range."""
+    value = tensor.detach().to(torch.float32)
+    if not torch.isfinite(value).all():
+        raise RuntimeError(
+            f"non-finite attention states observed during calibration for module {name}"
+        )
+    return float(value.abs().amax().item())
+
+
+def collect_attention_statistics(
+    model: torch.nn.Module,
+    tokenizer: PreTrainedTokenizerBase,
+    calibration_texts: list[str],
+    config: PTQRunConfig,
+    device: str,
+) -> dict[str, AttentionQKVStats]:
+    """Collect static q/k/v calibration ranges from attention modules.
+
+    The installed compressed-tensors attention and kv-cache hooks both read
+    `module.quantization_scheme.input_activations` at runtime. Because of that
+    runtime contract, we calibrate q, k, and v together whenever either
+    attention or kv-cache quantization is enabled in a non-dynamic mode.
+    """
+    static_attention_like = (
+        config.method.name is not QuantizationMethod.DYNAMIC
+        and (config.artifacts.attention.enabled or config.artifacts.kv_cache.enabled)
+    )
+    if not static_attention_like or not calibration_texts:
+        return {}
+
+    stats: dict[str, dict[str, float]] = {}
+    hooks = []
+
+    for name, module in model.named_modules():
+        if not is_attention_module(module):
+            continue
+
+        if config.artifacts.attention.enabled:
+            initialize_hooked_attention(model, module)
+        else:
+            initialize_hooked_kv_cache(model, module)
+
+        def query_hook(attn_module, query_states, module_name=name):
+            del attn_module
+            observed = _max_abs_from_attention_tensor(query_states, module_name)
+            current = stats.setdefault(
+                module_name,
+                {"q_absmax": 0.0, "k_absmax": 0.0, "v_absmax": 0.0},
+            )
+            current["q_absmax"] = max(current["q_absmax"], observed)
+            return None
+
+        def key_hook(attn_module, key_states, module_name=name):
+            del attn_module
+            observed = _max_abs_from_attention_tensor(key_states, module_name)
+            current = stats.setdefault(
+                module_name,
+                {"q_absmax": 0.0, "k_absmax": 0.0, "v_absmax": 0.0},
+            )
+            current["k_absmax"] = max(current["k_absmax"], observed)
+            return None
+
+        def value_hook(attn_module, value_states, module_name=name):
+            del attn_module
+            observed = _max_abs_from_attention_tensor(value_states, module_name)
+            current = stats.setdefault(
+                module_name,
+                {"q_absmax": 0.0, "k_absmax": 0.0, "v_absmax": 0.0},
+            )
+            current["v_absmax"] = max(current["v_absmax"], observed)
+            return None
+
+        if config.artifacts.attention.enabled:
+            hooks.append(register_query_hook(module, query_hook))
+        hooks.append(register_key_hook(module, key_hook))
+        hooks.append(register_value_hook(module, value_hook))
+
+    with torch.no_grad():
+        for batch in batched_texts(
+            calibration_texts,
+            config.calibration.batch_size,
+        ):
+            encoded = tokenizer(
+                batch,
+                return_tensors="pt",
+                truncation=True,
+                padding=True,
+                max_length=config.calibration.max_sequence_length,
+            )
+            encoded = {k: v.to(device) for k, v in encoded.items()}
+            model(**encoded)
+
+    for hook in hooks:
+        hook.remove()
+
+    return {
+        name: AttentionQKVStats(
+            q_absmax=value["q_absmax"],
+            k_absmax=value["k_absmax"],
+            v_absmax=value["v_absmax"],
+        )
+        for name, value in stats.items()
+    }
+
+
 def populate_weight_quantization_parameters(
     model: torch.nn.Module,
     gptq_parameters: dict[str, WeightQuantizationParameters] | None = None,
@@ -267,3 +398,30 @@ def populate_static_activation_parameters(
         scale, zero_point = calculate_scale_zero_point(stat_tensor, args)
         set_module_param(module, "input_scale", scale)
         set_module_param(module, "input_zero_point", zero_point)
+
+
+def populate_static_attention_parameters(
+    model: torch.nn.Module,
+    attention_stats: dict[str, AttentionQKVStats],
+) -> None:
+    """Populate frozen q/k/v scales for static attention and kv-cache exports."""
+    for name, module in model.named_modules():
+        if name not in attention_stats:
+            continue
+        scheme = getattr(module, "quantization_scheme", None)
+        if scheme is None or scheme.input_activations is None:
+            continue
+        args = scheme.input_activations
+        if args.dynamic in {True, DynamicType.LOCAL}:
+            continue
+
+        stats = attention_stats[name]
+        for base_name, absmax in (
+            ("q", stats.q_absmax),
+            ("k", stats.k_absmax),
+            ("v", stats.v_absmax),
+        ):
+            stat_tensor = torch.tensor([absmax], dtype=torch.float32)
+            scale, _ = calculate_scale_zero_point(stat_tensor, args)
+            set_module_param(module, f"{base_name}_scale", scale)
+            clear_module_param(module, f"{base_name}_zero_point")

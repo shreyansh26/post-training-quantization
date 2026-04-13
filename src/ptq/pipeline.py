@@ -19,7 +19,7 @@ from ptq.eval import (
 )
 from ptq.metrics import MetricRow, has_metrics_for_method, upsert_metric_rows
 from ptq.modeling import load_model_and_tokenizer
-from ptq.quantization.compressed import (
+from ptq.quantization.quantization_pipeline import (
     export_quantized_model,
     prepare_model_for_quantization,
 )

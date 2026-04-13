@@ -1,10 +1,10 @@
-from ptq.quantization.artifact_config import build_quantization_config
 from ptq.quantization.awq import apply_awq
-from ptq.quantization.compressed import (
+from ptq.quantization.gptq import apply_gptq
+from ptq.quantization.quantization_pipeline import (
     export_quantized_model,
     prepare_model_for_quantization,
 )
-from ptq.quantization.gptq import apply_gptq
+from ptq.quantization.quantization_scheme import build_quantization_config
 from ptq.quantization.simulated_w8a8_linear import (
     SimulatedW8A8Linear,
     apply_simulated_w8a8_to_linear,

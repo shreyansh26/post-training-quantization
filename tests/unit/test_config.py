@@ -75,29 +75,41 @@ def test_dynamic_w8a8_config_is_supported() -> None:
     validate_supported_config(config)
 
 
-def test_attention_quantization_is_supported_with_valid_granularity() -> None:
+def test_static_attention_quantization_is_supported_with_matching_kv_cache() -> None:
     raw = _base_config()
+    raw["method"]["name"] = "static"
+    raw["artifacts"]["activations"] = {
+        "enabled": False,
+        "dtype": "none",
+        "granularity": "none",
+        "symmetric": True,
+    }
     raw["artifacts"]["attention"] = {
         "enabled": True,
         "dtype": "fp8",
-        "granularity": "token",
+        "granularity": "tensor",
+        "symmetric": True,
+    }
+    raw["artifacts"]["kv_cache"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "tensor",
         "symmetric": True,
     }
     config = PTQRunConfig.model_validate(raw)
     validate_supported_config(config)
 
 
-def test_kv_cache_requires_attention_enabled() -> None:
+def test_kv_cache_quantization_is_supported_without_attention() -> None:
     raw = _base_config()
     raw["artifacts"]["kv_cache"] = {
         "enabled": True,
         "dtype": "fp8",
-        "granularity": "token",
+        "granularity": "tensor",
         "symmetric": True,
     }
     config = PTQRunConfig.model_validate(raw)
-    with pytest.raises(ValueError, match="kv_cache quantization requires attention"):
-        validate_supported_config(config)
+    validate_supported_config(config)
 
 
 def test_static_activation_quantization_requires_calibration() -> None:
@@ -120,6 +132,42 @@ def test_calibration_metadata_is_used_for_static_activation() -> None:
     raw = _base_config()
     raw["method"]["name"] = "static"
     raw["artifacts"]["activations"]["granularity"] = "tensor"
+    config = PTQRunConfig.model_validate(raw)
+    dataset, samples = config.calibration_metadata()
+    assert dataset == "HuggingFaceH4/ultrachat_200k"
+    assert samples == 256
+
+
+def test_static_attention_quantization_requires_calibration_metadata() -> None:
+    raw = _base_config()
+    raw["method"]["name"] = "static"
+    raw["artifacts"]["attention"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "tensor",
+        "symmetric": True,
+    }
+    raw["artifacts"]["kv_cache"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "tensor",
+        "symmetric": True,
+    }
+    config = PTQRunConfig.model_validate(raw)
+    dataset, samples = config.calibration_metadata()
+    assert dataset == "HuggingFaceH4/ultrachat_200k"
+    assert samples == 256
+
+
+def test_static_kv_cache_quantization_requires_calibration_metadata() -> None:
+    raw = _base_config()
+    raw["method"]["name"] = "static"
+    raw["artifacts"]["kv_cache"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "tensor",
+        "symmetric": True,
+    }
     config = PTQRunConfig.model_validate(raw)
     dataset, samples = config.calibration_metadata()
     assert dataset == "HuggingFaceH4/ultrachat_200k"
@@ -159,6 +207,131 @@ def test_static_activation_group_granularity_is_rejected() -> None:
     with pytest.raises(
         ValueError,
         match="static activation quantization does not support group granularity",
+    ):
+        validate_supported_config(config)
+
+
+def test_static_attention_token_granularity_is_rejected() -> None:
+    raw = _base_config()
+    raw["method"]["name"] = "static"
+    raw["artifacts"]["activations"] = {
+        "enabled": False,
+        "dtype": "none",
+        "granularity": "none",
+        "symmetric": True,
+    }
+    raw["artifacts"]["attention"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "token",
+        "symmetric": True,
+    }
+    raw["artifacts"]["kv_cache"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "tensor",
+        "symmetric": True,
+    }
+    config = PTQRunConfig.model_validate(raw)
+    with pytest.raises(
+        ValueError,
+        match="static attention quantization does not support token granularity",
+    ):
+        validate_supported_config(config)
+
+
+def test_dynamic_attention_quantization_is_rejected() -> None:
+    raw = _base_config()
+    raw["artifacts"]["activations"] = {
+        "enabled": False,
+        "dtype": "none",
+        "granularity": "none",
+        "symmetric": True,
+    }
+    raw["artifacts"]["attention"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "tensor",
+        "symmetric": True,
+    }
+    raw["artifacts"]["kv_cache"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "tensor",
+        "symmetric": True,
+    }
+    config = PTQRunConfig.model_validate(raw)
+    with pytest.raises(
+        ValueError,
+        match="dynamic attention quantization is not supported by vLLM",
+    ):
+        validate_supported_config(config)
+
+
+def test_kv_cache_token_granularity_is_rejected() -> None:
+    raw = _base_config()
+    raw["artifacts"]["kv_cache"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "token",
+        "symmetric": True,
+    }
+    config = PTQRunConfig.model_validate(raw)
+    with pytest.raises(
+        ValueError,
+        match="kv_cache quantization does not support token granularity",
+    ):
+        validate_supported_config(config)
+
+
+def test_attention_requires_kv_cache() -> None:
+    raw = _base_config()
+    raw["method"]["name"] = "static"
+    raw["artifacts"]["activations"] = {
+        "enabled": False,
+        "dtype": "none",
+        "granularity": "none",
+        "symmetric": True,
+    }
+    raw["artifacts"]["attention"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "tensor",
+        "symmetric": True,
+    }
+    config = PTQRunConfig.model_validate(raw)
+    with pytest.raises(
+        ValueError,
+        match="attention quantization is coupled with kv_cache in vLLM",
+    ):
+        validate_supported_config(config)
+
+
+def test_attention_and_kv_cache_must_share_settings() -> None:
+    raw = _base_config()
+    raw["method"]["name"] = "static"
+    raw["artifacts"]["activations"] = {
+        "enabled": False,
+        "dtype": "none",
+        "granularity": "none",
+        "symmetric": True,
+    }
+    raw["artifacts"]["attention"] = {
+        "enabled": True,
+        "dtype": "fp8",
+        "granularity": "tensor",
+        "symmetric": True,
+    }
+    raw["artifacts"]["kv_cache"] = {
+        "enabled": True,
+        "dtype": "int8",
+        "granularity": "tensor",
+        "symmetric": True,
+    }
+    config = PTQRunConfig.model_validate(raw)
+    with pytest.raises(
+        ValueError,
+        match="attention and kv_cache quantization must use identical settings",
     ):
         validate_supported_config(config)
 

@@ -2,6 +2,11 @@ from types import SimpleNamespace
 
 import torch
 import torch.nn as nn
+from compressed_tensors.quantization import QuantizationArgs, QuantizationScheme
+from compressed_tensors.quantization.quant_args import (
+    QuantizationStrategy,
+    QuantizationType,
+)
 
 from ptq.config import (
     ArtifactQuantizationSettings,
@@ -11,8 +16,12 @@ from ptq.config import (
     QuantizationMethod,
 )
 from ptq.quantization.awq import apply_awq
-from ptq.quantization.compressed import prepare_model_for_quantization
+from ptq.quantization.calibration_qparams import (
+    AttentionQKVStats,
+    populate_static_attention_parameters,
+)
 from ptq.quantization.gptq import apply_gptq
+from ptq.quantization.quantization_pipeline import prepare_model_for_quantization
 from ptq.quantization.simulated_w8a8_linear import SimulatedW8A8Linear
 from ptq.quantization.smoothquant import apply_smoothquant
 from ptq.quantization.weight_only import quantize_linear_weight_rtn
@@ -106,6 +115,42 @@ class _TinyAttention(nn.Module):
         self.q_proj = nn.Linear(hidden_size, hidden_size, bias=False)
         self.k_proj = nn.Linear(hidden_size, hidden_size, bias=False)
         self.v_proj = nn.Linear(hidden_size, hidden_size, bias=False)
+
+
+class _InstrumentedAttention(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.q_proj = nn.Linear(8, 8, bias=False)
+        self.k_proj = nn.Linear(8, 8, bias=False)
+        self.v_proj = nn.Linear(8, 8, bias=False)
+        self.quantization_scheme = QuantizationScheme(
+            targets=["self_attn"],
+            input_activations=QuantizationArgs(
+                num_bits=8,
+                type=QuantizationType.FLOAT,
+                symmetric=True,
+                strategy=QuantizationStrategy.TENSOR,
+                dynamic=False,
+            )
+        )
+        for name in (
+            "q_scale",
+            "q_zero_point",
+            "k_scale",
+            "k_zero_point",
+            "v_scale",
+            "v_zero_point",
+        ):
+            self.register_parameter(
+                name,
+                nn.Parameter(torch.zeros(1), requires_grad=False),
+            )
+
+
+class _AttentionWrapper(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.self_attn = _InstrumentedAttention()
 
 
 class _TinyMLP(nn.Module):
@@ -411,3 +456,23 @@ def test_apply_gptq_updates_tiny_model_weights() -> None:
     assert "fc1" in quantized
     assert torch.isfinite(quantized["fc1"][1].scale).all()
     assert not torch.allclose(original_weight, model.fc1.weight)
+
+
+def test_populate_static_attention_parameters_sets_qkv_scales() -> None:
+    model = _AttentionWrapper()
+    attention_stats = {
+        "self_attn": AttentionQKVStats(
+            q_absmax=2.0,
+            k_absmax=3.0,
+            v_absmax=4.0,
+        )
+    }
+
+    populate_static_attention_parameters(model, attention_stats)
+
+    assert torch.isfinite(model.self_attn.q_scale).all()
+    assert torch.isfinite(model.self_attn.k_scale).all()
+    assert torch.isfinite(model.self_attn.v_scale).all()
+    assert model.self_attn.q_scale.item() > 0
+    assert model.self_attn.k_scale.item() > 0
+    assert model.self_attn.v_scale.item() > 0

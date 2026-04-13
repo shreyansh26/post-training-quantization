@@ -1,10 +1,11 @@
-"""Artifact-oriented quantization config builders.
+"""Quantization scheme builders.
 
 This module translates repo-level artifact settings into the compressed-tensors
 objects that drive export. The intent is to keep artifact composition separate
 from method-specific preprocessing such as SmoothQuant, AWQ, and GPTQ.
 """
 
+import torch
 from compressed_tensors.quantization import (
     QuantizationArgs,
     QuantizationConfig,
@@ -13,6 +14,7 @@ from compressed_tensors.quantization import (
     QuantizationStrategy,
     QuantizationType,
 )
+from compressed_tensors.quantization.lifecycle.initialize import is_attention_module
 
 from ptq.config import (
     ArtifactQuantizationSettings,
@@ -119,7 +121,22 @@ def quantization_format_for_config(config: PTQRunConfig) -> str:
     return "mixed-precision"
 
 
-def build_quantization_config(config: PTQRunConfig) -> QuantizationConfig:
+def discover_attention_targets(model: torch.nn.Module) -> list[str]:
+    """Return unique attention class names to use as compressed-tensors targets."""
+    targets: list[str] = []
+    for module in model.modules():
+        if not is_attention_module(module):
+            continue
+        target = module.__class__.__name__
+        if target not in targets:
+            targets.append(target)
+    return targets
+
+
+def build_quantization_config(
+    config: PTQRunConfig,
+    model: torch.nn.Module | None = None,
+) -> QuantizationConfig:
     """Build the compressed-tensors config for the enabled artifact combination."""
     dynamic_activations = config.method.name is QuantizationMethod.DYNAMIC
 
@@ -143,15 +160,23 @@ def build_quantization_config(config: PTQRunConfig) -> QuantizationConfig:
         )
 
     if config.artifacts.attention.enabled:
+        if model is None:
+            raise ValueError("attention quantization requires the loaded model")
         attention_args = build_artifact_quant_args(
             config.artifacts.attention,
             dynamic=dynamic_activations,
             for_weights=False,
         )
-        groups["attention"] = QuantizationScheme(
-            targets=["re:.*self_attn$"],
-            input_activations=attention_args,
-        )
+        attention_targets = discover_attention_targets(model)
+        if not attention_targets:
+            raise ValueError(
+                "could not discover any attention modules for quantization"
+            )
+        for index, target in enumerate(attention_targets):
+            groups[f"attention_{index}"] = QuantizationScheme(
+                targets=[target],
+                input_activations=attention_args,
+            )
 
     kv_args = None
     if config.artifacts.kv_cache.enabled:

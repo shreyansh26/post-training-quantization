@@ -1,3 +1,5 @@
+"""Production quantization pipeline and artifact export entrypoints."""
+
 from pathlib import Path
 
 import torch
@@ -9,13 +11,15 @@ from compressed_tensors.quantization import (
 from transformers import PreTrainedTokenizerBase
 
 from ptq.config import PTQRunConfig
-from ptq.quantization.artifact_config import build_quantization_config
-from ptq.quantization.artifact_parameters import (
+from ptq.quantization.calibration_qparams import (
     collect_activation_statistics,
+    collect_attention_statistics,
     populate_static_activation_parameters,
+    populate_static_attention_parameters,
     populate_weight_quantization_parameters,
 )
-from ptq.quantization.method_dispatch import prepare_method_for_quantization
+from ptq.quantization.method_preparation import prepare_method_for_quantization
+from ptq.quantization.quantization_scheme import build_quantization_config
 
 
 def prepare_model_for_quantization(
@@ -40,7 +44,14 @@ def prepare_model_for_quantization(
         config=config,
         device=device,
     )
-    quant_config = build_quantization_config(config)
+    attention_stats = collect_attention_statistics(
+        model=model,
+        tokenizer=tokenizer,
+        calibration_texts=calibration_texts,
+        config=config,
+        device=device,
+    )
+    quant_config = build_quantization_config(config, model=model)
     apply_quantization_config(model, quant_config)
     populate_weight_quantization_parameters(
         model=model,
@@ -49,6 +60,10 @@ def prepare_model_for_quantization(
     populate_static_activation_parameters(
         model=model,
         activation_stats=activation_stats,
+    )
+    populate_static_attention_parameters(
+        model=model,
+        attention_stats=attention_stats,
     )
     return quant_config
 

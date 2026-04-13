@@ -1,4 +1,4 @@
-"""Method-oriented preprocessing and quantization dispatch.
+"""Method-specific preparation before general quantization/export.
 
 Artifact serialization is intentionally handled elsewhere. This module only
 decides which method-specific preprocessing step should run before artifact

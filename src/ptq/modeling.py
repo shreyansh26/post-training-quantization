@@ -19,11 +19,14 @@ def load_model_and_tokenizer(
         trust_remote_code=model_settings.trust_remote_code,
     )
 
-    dtype = torch.float16 if device.startswith("cuda") else torch.float32
+    # Preserve the checkpoint's native dtype on GPU. This matters for features
+    # like FP8 attention/KV-cache paths in vLLM, which may require BF16 rather
+    # than a forced FP16 downcast.
+    dtype = "auto" if device.startswith("cuda") else torch.float32
     model = AutoModelForCausalLM.from_pretrained(
         model_settings.model_id,
         trust_remote_code=model_settings.trust_remote_code,
-        torch_dtype=dtype,
+        dtype=dtype,
     )
     model.eval()
     model.to(device)

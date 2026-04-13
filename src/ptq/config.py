@@ -306,6 +306,11 @@ class PTQRunConfig(BaseModel):
             and self.artifacts.activations.enabled
         ):
             return True
+        if (
+            self.method.name is not QuantizationMethod.DYNAMIC
+            and (self.artifacts.attention.enabled or self.artifacts.kv_cache.enabled)
+        ):
+            return True
         return False
 
     def calibration_metadata(self) -> tuple[str, int]:
