@@ -12,9 +12,8 @@ from transformers import PreTrainedTokenizerBase
 
 from ptq.config import PTQRunConfig
 from ptq.quantization.calibration_qparams import (
-    collect_activation_statistics,
+    calibrate_static_activation_parameters,
     collect_attention_statistics,
-    populate_static_activation_parameters,
     populate_static_attention_parameters,
     populate_weight_quantization_parameters,
 )
@@ -37,13 +36,6 @@ def prepare_model_for_quantization(
         calibration_texts=calibration_texts,
         device=device,
     )
-    activation_stats = collect_activation_statistics(
-        model=model,
-        tokenizer=tokenizer,
-        calibration_texts=calibration_texts,
-        config=config,
-        device=device,
-    )
     attention_stats = collect_attention_statistics(
         model=model,
         tokenizer=tokenizer,
@@ -57,9 +49,12 @@ def prepare_model_for_quantization(
         model=model,
         gptq_parameters=method_result.gptq_parameters or None,
     )
-    populate_static_activation_parameters(
+    calibrate_static_activation_parameters(
         model=model,
-        activation_stats=activation_stats,
+        tokenizer=tokenizer,
+        calibration_texts=calibration_texts,
+        config=config,
+        device=device,
     )
     populate_static_attention_parameters(
         model=model,

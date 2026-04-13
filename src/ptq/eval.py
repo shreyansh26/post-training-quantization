@@ -9,6 +9,20 @@ from vllm import LLM, SamplingParams
 
 from ptq.config import PTQRunConfig
 
+TASK_METRIC_FILTERS: dict[str, set[str]] = {
+    "gsm8k": {
+        "exact_match,strict-match",
+        "exact_match,flexible-extract",
+    },
+    "ifeval": {
+        "prompt_level_strict_acc,none",
+        "inst_level_strict_acc,none",
+    },
+    "mmlu": {
+        "acc,none",
+    },
+}
+
 
 def load_sanity_prompts(path: Path) -> list[str]:
     """Load the non-empty sanity prompts used for quick qualitative checks."""
@@ -87,12 +101,21 @@ def _find_lm_eval_results_json(path: Path) -> Path:
     return candidates[-1]
 
 
-def _collect_numeric_metrics(task_metrics: dict[str, Any]) -> dict[str, float]:
-    """Drop non-scalar lm-eval fields so the CSV logger stays uniform."""
+def _collect_numeric_metrics(
+    task_name: str,
+    task_metrics: dict[str, Any],
+) -> dict[str, float]:
+    """Keep only the task-level scalar metrics that are useful for reporting."""
     selected: dict[str, float] = {}
+    allowed_metrics = TASK_METRIC_FILTERS.get(task_name)
     for key, value in task_metrics.items():
-        if isinstance(value, (float, int)):
-            selected[key] = float(value)
+        if not isinstance(value, (float, int)):
+            continue
+        if allowed_metrics is not None and key not in allowed_metrics:
+            continue
+        if key.endswith("_stderr"):
+            continue
+        selected[key] = float(value)
     return selected
 
 
@@ -144,5 +167,5 @@ def run_lm_eval_vllm(
     metrics: dict[str, dict[str, float]] = {}
     for task in config.evaluation.tasks:
         if task in task_results:
-            metrics[task] = _collect_numeric_metrics(task_results[task])
+            metrics[task] = _collect_numeric_metrics(task, task_results[task])
     return metrics, results_json

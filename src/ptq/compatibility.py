@@ -97,20 +97,13 @@ def validate_supported_config(config: PTQRunConfig) -> None:
         if config.calibration.num_samples <= 0:
             return
 
-    if config.method.name in {
-        QuantizationMethod.SMOOTHQUANT,
-        QuantizationMethod.AWQ,
-        QuantizationMethod.GPTQ,
-    }:
+    if config.smoothquant_enabled() or config.uses_weight_optimizer():
         if config.calibration.num_samples <= 0:
             raise ValueError(f"{config.method.name} requires calibration data")
         if not config.artifacts.weights.enabled:
             raise ValueError(f"{config.method.name} requires weights enabled")
 
-    if (
-        config.method.name is QuantizationMethod.SMOOTHQUANT
-        and not config.artifacts.activations.enabled
-    ):
+    if config.smoothquant_enabled() and not config.artifacts.activations.enabled:
         raise ValueError("smoothquant requires activation quantization enabled")
 
     if (
@@ -122,12 +115,7 @@ def validate_supported_config(config: PTQRunConfig) -> None:
 
     if config.artifacts.activations.enabled:
         dynamic_mode = config.method.name is QuantizationMethod.DYNAMIC
-        static_mode = config.method.name in {
-            QuantizationMethod.STATIC,
-            QuantizationMethod.SMOOTHQUANT,
-            QuantizationMethod.AWQ,
-            QuantizationMethod.GPTQ,
-        }
+        static_mode = config.is_static_like()
         if (
             dynamic_mode
             and config.artifacts.activations.granularity
@@ -161,12 +149,7 @@ def validate_supported_config(config: PTQRunConfig) -> None:
                 "enable kv_cache with matching settings"
             )
         dynamic_mode = config.method.name is QuantizationMethod.DYNAMIC
-        static_mode = config.method.name in {
-            QuantizationMethod.STATIC,
-            QuantizationMethod.SMOOTHQUANT,
-            QuantizationMethod.AWQ,
-            QuantizationMethod.GPTQ,
-        }
+        static_mode = config.is_static_like()
         if dynamic_mode:
             raise ValueError(
                 "dynamic attention quantization is not supported by vLLM; "
@@ -185,12 +168,7 @@ def validate_supported_config(config: PTQRunConfig) -> None:
 
     if config.artifacts.kv_cache.enabled:
         dynamic_mode = config.method.name is QuantizationMethod.DYNAMIC
-        static_mode = config.method.name in {
-            QuantizationMethod.STATIC,
-            QuantizationMethod.SMOOTHQUANT,
-            QuantizationMethod.AWQ,
-            QuantizationMethod.GPTQ,
-        }
+        static_mode = config.is_static_like()
         if not dynamic_mode and config.calibration.num_samples <= 0:
             raise ValueError("static kv_cache quantization requires calibration data")
 

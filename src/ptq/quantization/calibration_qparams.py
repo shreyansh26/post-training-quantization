@@ -19,9 +19,13 @@ from compressed_tensors.modeling.kvcache import (
     register_key_hook,
     register_value_hook,
 )
-from compressed_tensors.quantization import DynamicType, QuantizationArgs
+from compressed_tensors.quantization import (
+    DynamicType,
+    QuantizationArgs,
+    QuantizationStatus,
+)
 from compressed_tensors.quantization.lifecycle.initialize import is_attention_module
-from compressed_tensors.quantization.utils import calculate_range
+from compressed_tensors.quantization.utils import calculate_qparams
 from transformers import PreTrainedTokenizerBase
 
 from ptq.config import PTQRunConfig, QuantizationMethod
@@ -34,7 +38,11 @@ class ModuleActivationStats:
     """Per-linear activation statistics collected during calibration."""
 
     global_absmax: float
+    global_min: float
+    global_max: float
     channel_absmax: torch.Tensor
+    channel_min: torch.Tensor
+    channel_max: torch.Tensor
     channel_sq_mean: torch.Tensor
 
 
@@ -55,42 +63,32 @@ def strategy_name(args: QuantizationArgs) -> str:
     return str(strategy).split(".")[-1].upper()
 
 
-def calculate_scale_zero_point(
-    values: torch.Tensor,
+def calculate_bounds_qparams(
+    min_vals: torch.Tensor,
+    max_vals: torch.Tensor,
     args: QuantizationArgs,
 ) -> tuple[torch.Tensor, torch.Tensor]:
-    """Convert observed ranges into scale and zero-point tensors."""
-    q_min, q_max = calculate_range(args, values.device)
-    q_min = float(q_min.item())
-    q_max = float(q_max.item())
-    eps = torch.tensor(1e-8, dtype=torch.float32, device=values.device)
-
-    if args.symmetric:
-        max_val = values.abs()
-        denom = max(abs(q_min), abs(q_max))
-        scale = torch.maximum(max_val / denom, eps)
-        zero_point = torch.zeros_like(scale)
-        return scale, zero_point
-
-    min_val = -values.abs()
-    max_val = values.abs()
-    scale = torch.maximum((max_val - min_val) / max(q_max - q_min, 1.0), eps)
-    zero_point = torch.clamp(torch.round(q_min - min_val / scale), q_min, q_max)
-    return scale, zero_point
+    """Convert observed min/max tensors into serialized scale and zero-point."""
+    return calculate_qparams(
+        min_vals=min_vals,
+        max_vals=max_vals,
+        quantization_args=args,
+        global_scale=None,
+    )
 
 
-def reshape_weight_for_scale(
+def weight_bounds_for_strategy(
     weight: torch.Tensor,
     args: QuantizationArgs,
-) -> torch.Tensor:
-    """Reduce a weight matrix into the serialized qparam shape."""
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Project a weight matrix into min/max tensors matching serialized qparams."""
     strategy = strategy_name(args)
 
     if strategy == "TENSOR":
-        return weight.reshape(1)
+        return weight.reshape(1).amin().reshape(1), weight.reshape(1).amax().reshape(1)
 
     if strategy == "CHANNEL":
-        return weight.abs().amax(dim=1, keepdim=True)
+        return weight.amin(dim=1, keepdim=True), weight.amax(dim=1, keepdim=True)
 
     if strategy in {"GROUP", "TENSOR_GROUP"}:
         if args.group_size is None:
@@ -100,7 +98,7 @@ def reshape_weight_for_scale(
         if padded_cols != cols:
             weight = F.pad(weight, (0, padded_cols - cols), value=0.0)
         grouped = weight.reshape(weight.shape[0], -1, args.group_size)
-        return grouped.abs().amax(dim=-1)
+        return grouped.amin(dim=-1), grouped.amax(dim=-1)
 
     if strategy == "BLOCK":
         if not args.block_structure:
@@ -118,7 +116,7 @@ def reshape_weight_for_scale(
             block_w,
         )
         blocks = view.transpose(1, 2)
-        return blocks.abs().amax(dim=(-1, -2))
+        return blocks.amin(dim=(-1, -2)), blocks.amax(dim=(-1, -2))
 
     raise ValueError(f"unsupported weight strategy: {args.strategy}")
 
@@ -172,15 +170,23 @@ def collect_activation_statistics(
                 )
             flat = tensor.reshape(-1, tensor.shape[-1])
             channel_absmax = flat.abs().amax(dim=0).cpu()
+            channel_min = flat.amin(dim=0).cpu()
+            channel_max = flat.amax(dim=0).cpu()
             channel_sq_sum = flat.pow(2).sum(dim=0).cpu()
             token_count = flat.shape[0]
             global_absmax = float(channel_absmax.max().item())
+            global_min = float(channel_min.min().item())
+            global_max = float(channel_max.max().item())
 
             current = stats.get(_name)
             if current is None:
                 stats[_name] = {
                     "global_absmax": global_absmax,
+                    "global_min": global_min,
+                    "global_max": global_max,
                     "channel_absmax": channel_absmax,
+                    "channel_min": channel_min,
+                    "channel_max": channel_max,
                     "channel_sq_sum": channel_sq_sum,
                     "token_count": token_count,
                 }
@@ -189,9 +195,19 @@ def collect_activation_statistics(
                     float(current["global_absmax"]),
                     global_absmax,
                 )
+                current["global_min"] = min(float(current["global_min"]), global_min)
+                current["global_max"] = max(float(current["global_max"]), global_max)
                 current["channel_absmax"] = torch.maximum(
                     current["channel_absmax"],
                     channel_absmax,
+                )
+                current["channel_min"] = torch.minimum(
+                    current["channel_min"],
+                    channel_min,
+                )
+                current["channel_max"] = torch.maximum(
+                    current["channel_max"],
+                    channel_max,
                 )
                 current["channel_sq_sum"] = current["channel_sq_sum"] + channel_sq_sum
                 current["token_count"] = int(current["token_count"]) + token_count
@@ -223,10 +239,81 @@ def collect_activation_statistics(
         channel_sq_mean = value["channel_sq_sum"] / token_count
         results[name] = ModuleActivationStats(
             global_absmax=float(value["global_absmax"]),
+            global_min=float(value["global_min"]),
+            global_max=float(value["global_max"]),
             channel_absmax=value["channel_absmax"],
+            channel_min=value["channel_min"],
+            channel_max=value["channel_max"],
             channel_sq_mean=channel_sq_mean,
         )
     return results
+
+
+def _update_module_activation_stats(
+    stats: dict[str, dict[str, torch.Tensor | int | float]],
+    module_name: str,
+    inputs: torch.Tensor,
+) -> ModuleActivationStats:
+    """Update running activation stats for one module and return the aggregate."""
+    tensor = inputs.detach().to(torch.float32)
+    if not torch.isfinite(tensor).all():
+        raise RuntimeError(
+            "non-finite activations observed during calibration for module "
+            f"{module_name}"
+        )
+
+    flat = tensor.reshape(-1, tensor.shape[-1])
+    channel_absmax = flat.abs().amax(dim=0).cpu()
+    channel_min = flat.amin(dim=0).cpu()
+    channel_max = flat.amax(dim=0).cpu()
+    channel_sq_sum = flat.pow(2).sum(dim=0).cpu()
+    token_count = flat.shape[0]
+    global_absmax = float(channel_absmax.max().item())
+    global_min = float(channel_min.min().item())
+    global_max = float(channel_max.max().item())
+
+    current = stats.get(module_name)
+    if current is None:
+        current = {
+            "global_absmax": global_absmax,
+            "global_min": global_min,
+            "global_max": global_max,
+            "channel_absmax": channel_absmax,
+            "channel_min": channel_min,
+            "channel_max": channel_max,
+            "channel_sq_sum": channel_sq_sum,
+            "token_count": token_count,
+        }
+        stats[module_name] = current
+    else:
+        current["global_absmax"] = max(float(current["global_absmax"]), global_absmax)
+        current["global_min"] = min(float(current["global_min"]), global_min)
+        current["global_max"] = max(float(current["global_max"]), global_max)
+        current["channel_absmax"] = torch.maximum(
+            current["channel_absmax"],
+            channel_absmax,
+        )
+        current["channel_min"] = torch.minimum(
+            current["channel_min"],
+            channel_min,
+        )
+        current["channel_max"] = torch.maximum(
+            current["channel_max"],
+            channel_max,
+        )
+        current["channel_sq_sum"] = current["channel_sq_sum"] + channel_sq_sum
+        current["token_count"] = int(current["token_count"]) + token_count
+
+    total_tokens = max(int(current["token_count"]), 1)
+    return ModuleActivationStats(
+        global_absmax=float(current["global_absmax"]),
+        global_min=float(current["global_min"]),
+        global_max=float(current["global_max"]),
+        channel_absmax=current["channel_absmax"],
+        channel_min=current["channel_min"],
+        channel_max=current["channel_max"],
+        channel_sq_mean=current["channel_sq_sum"] / total_tokens,
+    )
 
 
 def _max_abs_from_attention_tensor(tensor: torch.Tensor, name: str) -> float:
@@ -352,31 +439,46 @@ def populate_weight_quantization_parameters(
             zero_point = gptq_parameters[name].zero_point
         else:
             weight = module.weight.detach().to(torch.float32)
-            reduced = reshape_weight_for_scale(weight, scheme.weights)
-            scale, zero_point = calculate_scale_zero_point(reduced, scheme.weights)
+            min_vals, max_vals = weight_bounds_for_strategy(weight, scheme.weights)
+            scale, zero_point = calculate_bounds_qparams(
+                min_vals,
+                max_vals,
+                scheme.weights,
+            )
         set_module_param(module, "weight_scale", scale)
         set_module_param(module, "weight_zero_point", zero_point)
 
 
-def activation_tensor_for_strategy(
+def activation_bounds_for_strategy(
     stat: ModuleActivationStats,
     args: QuantizationArgs,
-) -> torch.Tensor:
-    """Project activation stats into the serialized qparam shape."""
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Project activation stats into min/max tensors for asymmetric qparams."""
     strategy = strategy_name(args)
-    channel_absmax = stat.channel_absmax.to(torch.float32)
+    channel_min = stat.channel_min.to(torch.float32)
+    channel_max = stat.channel_max.to(torch.float32)
+
     if strategy == "TENSOR":
-        return torch.tensor([stat.global_absmax], dtype=torch.float32)
+        return (
+            torch.tensor([stat.global_min], dtype=torch.float32),
+            torch.tensor([stat.global_max], dtype=torch.float32),
+        )
+
     if strategy == "CHANNEL":
-        return channel_absmax.reshape(-1, 1)
+        return channel_min.reshape(-1, 1), channel_max.reshape(-1, 1)
+
     if strategy in {"GROUP", "TENSOR_GROUP"}:
         if args.group_size is None:
             raise ValueError("group activation quantization requires group_size")
-        width = channel_absmax.numel()
+        width = channel_min.numel()
         padded = ceil(width / args.group_size) * args.group_size
         if padded != width:
-            channel_absmax = F.pad(channel_absmax, (0, padded - width), value=0.0)
-        return channel_absmax.reshape(-1, args.group_size).amax(dim=-1).reshape(1, -1)
+            channel_min = F.pad(channel_min, (0, padded - width), value=0.0)
+            channel_max = F.pad(channel_max, (0, padded - width), value=0.0)
+        reduced_min = channel_min.reshape(-1, args.group_size).amin(dim=-1)
+        reduced_max = channel_max.reshape(-1, args.group_size).amax(dim=-1)
+        return reduced_min.reshape(1, -1), reduced_max.reshape(1, -1)
+
     raise ValueError(f"unsupported static activation strategy: {args.strategy}")
 
 
@@ -394,10 +496,111 @@ def populate_static_activation_parameters(
         args = scheme.input_activations
         if args.dynamic in {True, DynamicType.LOCAL}:
             continue
-        stat_tensor = activation_tensor_for_strategy(activation_stats[name], args)
-        scale, zero_point = calculate_scale_zero_point(stat_tensor, args)
+        min_tensor, max_tensor = activation_bounds_for_strategy(
+            activation_stats[name],
+            args,
+        )
+        scale, zero_point = calculate_bounds_qparams(
+            min_tensor,
+            max_tensor,
+            args,
+        )
         set_module_param(module, "input_scale", scale)
         set_module_param(module, "input_zero_point", zero_point)
+
+
+def calibrate_static_activation_parameters(
+    model: torch.nn.Module,
+    tokenizer: PreTrainedTokenizerBase,
+    calibration_texts: list[str],
+    config: PTQRunConfig,
+    device: str,
+) -> dict[str, ModuleActivationStats]:
+    """Calibrate static activation qparams through instrumented fake-quant forwards.
+
+    This mirrors llm-compressor more closely than the previous dense-only stats
+    pass: each linear layer updates its running activation observer state in a
+    forward pre-hook, then immediately executes with fake-quantized inputs and
+    weights. Downstream layers therefore see upstream quantization effects
+    during calibration.
+    """
+    static_modules: list[tuple[str, torch.nn.Linear]] = []
+    running_stats: dict[str, dict[str, torch.Tensor | int | float]] = {}
+    hooks = []
+
+    for name, module in model.named_modules():
+        if not isinstance(module, torch.nn.Linear):
+            continue
+        scheme = getattr(module, "quantization_scheme", None)
+        if scheme is None or scheme.input_activations is None:
+            continue
+        args = scheme.input_activations
+        if args.dynamic in {True, DynamicType.LOCAL}:
+            continue
+
+        static_modules.append((name, module))
+        module.quantization_status = QuantizationStatus.CALIBRATION
+
+        def pre_hook(
+            calibrated_module: torch.nn.Linear,
+            hook_args: tuple[object, ...],
+            *,
+            module_name: str = name,
+        ) -> None:
+            inputs = hook_args[0]
+            if not isinstance(inputs, torch.Tensor):
+                return
+            stats = _update_module_activation_stats(running_stats, module_name, inputs)
+            min_tensor, max_tensor = activation_bounds_for_strategy(
+                stats,
+                calibrated_module.quantization_scheme.input_activations,
+            )
+            scale, zero_point = calculate_bounds_qparams(
+                min_tensor,
+                max_tensor,
+                calibrated_module.quantization_scheme.input_activations,
+            )
+            set_module_param(calibrated_module, "input_scale", scale)
+            set_module_param(calibrated_module, "input_zero_point", zero_point)
+
+        hooks.append(module.register_forward_pre_hook(pre_hook))
+
+    if calibration_texts:
+        with torch.no_grad():
+            for batch in batched_texts(
+                calibration_texts,
+                config.calibration.batch_size,
+            ):
+                encoded = tokenizer(
+                    batch,
+                    return_tensors="pt",
+                    truncation=True,
+                    padding=True,
+                    max_length=config.calibration.max_sequence_length,
+                )
+                encoded = {key: value.to(device) for key, value in encoded.items()}
+                model(**encoded)
+
+    for hook in hooks:
+        hook.remove()
+
+    results: dict[str, ModuleActivationStats] = {}
+    for name, module in static_modules:
+        module.quantization_status = QuantizationStatus.FROZEN
+        current = running_stats.get(name)
+        if current is None:
+            continue
+        total_tokens = max(int(current["token_count"]), 1)
+        results[name] = ModuleActivationStats(
+            global_absmax=float(current["global_absmax"]),
+            global_min=float(current["global_min"]),
+            global_max=float(current["global_max"]),
+            channel_absmax=current["channel_absmax"],
+            channel_min=current["channel_min"],
+            channel_max=current["channel_max"],
+            channel_sq_mean=current["channel_sq_sum"] / total_tokens,
+        )
+    return results
 
 
 def populate_static_attention_parameters(
@@ -421,7 +624,15 @@ def populate_static_attention_parameters(
             ("k", stats.k_absmax),
             ("v", stats.v_absmax),
         ):
-            stat_tensor = torch.tensor([absmax], dtype=torch.float32)
-            scale, _ = calculate_scale_zero_point(stat_tensor, args)
+            min_tensor = torch.tensor([-absmax], dtype=torch.float32)
+            max_tensor = torch.tensor([absmax], dtype=torch.float32)
+            scale, zero_point = calculate_bounds_qparams(
+                min_tensor,
+                max_tensor,
+                args,
+            )
             set_module_param(module, f"{base_name}_scale", scale)
-            clear_module_param(module, f"{base_name}_zero_point")
+            if args.symmetric:
+                clear_module_param(module, f"{base_name}_zero_point")
+            else:
+                set_module_param(module, f"{base_name}_zero_point", zero_point)

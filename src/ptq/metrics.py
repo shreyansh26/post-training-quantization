@@ -38,7 +38,7 @@ class MetricRow(BaseModel):
             quantization_artifact=config.artifact_key(),
             quantization_dtype=config.dtype_key(),
             quantization_granularity=config.granularity_key(),
-            quantization_method=config.method.name,
+            quantization_method=config.method_key(),
             metric_name=metric_name,
             metric_value=metric_value,
             artifact_path=artifact_path,

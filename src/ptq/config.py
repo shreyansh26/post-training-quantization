@@ -83,7 +83,8 @@ class MethodSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: QuantizationMethod
-    smoothquant_alpha: float = 0.5
+    enable_smoothquant: bool = False
+    smoothquant_alpha: float = 0.8
     awq_clip_ratio: float = 1.0
     gptq_damp_percent: float = 0.01
     gptq_block_size: int = 128
@@ -260,12 +261,10 @@ class PTQRunConfig(BaseModel):
         } and not self.artifacts.weights.enabled:
             raise ValueError(f"{self.method.name} requires weight quantization")
 
-        if self.method.name in {
-            QuantizationMethod.SMOOTHQUANT,
-            QuantizationMethod.AWQ,
-            QuantizationMethod.GPTQ,
-        } and self.calibration.num_samples <= 0:
-            raise ValueError(f"{self.method.name} requires calibration samples")
+        if self.requires_calibration_data() and self.calibration.num_samples <= 0:
+            raise ValueError(
+                f"{self.method.name} configuration requires calibration samples"
+            )
 
         if (
             self.method.name is QuantizationMethod.STATIC
@@ -278,6 +277,26 @@ class PTQRunConfig(BaseModel):
 
         return self
 
+    def smoothquant_enabled(self) -> bool:
+        return (
+            self.method.enable_smoothquant
+            or self.method.name is QuantizationMethod.SMOOTHQUANT
+        )
+
+    def uses_weight_optimizer(self) -> bool:
+        return self.method.name in {
+            QuantizationMethod.AWQ,
+            QuantizationMethod.GPTQ,
+        }
+
+    def is_static_like(self) -> bool:
+        return self.method.name in {
+            QuantizationMethod.STATIC,
+            QuantizationMethod.SMOOTHQUANT,
+            QuantizationMethod.AWQ,
+            QuantizationMethod.GPTQ,
+        }
+
     def artifact_key(self) -> str:
         names = [
             name
@@ -285,6 +304,15 @@ class PTQRunConfig(BaseModel):
             if artifact.enabled
         ]
         return "+".join(names) if names else "none"
+
+    def method_key(self) -> str:
+        base = self.method.name.value
+        if (
+            self.smoothquant_enabled()
+            and self.method.name is not QuantizationMethod.SMOOTHQUANT
+        ):
+            return f"smoothquant+{base}"
+        return base
 
     def dtype_key(self) -> str:
         values = [
@@ -295,11 +323,7 @@ class PTQRunConfig(BaseModel):
         return "+".join(values) if values else "none"
 
     def requires_calibration_data(self) -> bool:
-        if self.method.name in {
-            QuantizationMethod.SMOOTHQUANT,
-            QuantizationMethod.AWQ,
-            QuantizationMethod.GPTQ,
-        }:
+        if self.smoothquant_enabled() or self.uses_weight_optimizer():
             return True
         if (
             self.method.name is QuantizationMethod.STATIC

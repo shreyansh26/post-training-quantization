@@ -33,7 +33,7 @@ def prepare_method_for_quantization(
     device: str,
 ) -> MethodPreparationResult:
     """Run the method-specific preprocessing step selected by the config."""
-    if config.method.name is QuantizationMethod.SMOOTHQUANT:
+    if config.smoothquant_enabled():
         apply_smoothquant(
             model=model,
             tokenizer=tokenizer,
@@ -41,7 +41,6 @@ def prepare_method_for_quantization(
             config=config,
             device=device,
         )
-        return MethodPreparationResult()
 
     if config.method.name is QuantizationMethod.AWQ:
         apply_awq(

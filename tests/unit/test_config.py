@@ -126,6 +126,7 @@ def test_calibration_metadata_is_none_for_dynamic() -> None:
     dataset, samples = config.calibration_metadata()
     assert dataset == "none"
     assert samples == 0
+    assert config.method_key() == "dynamic"
 
 
 def test_calibration_metadata_is_used_for_static_activation() -> None:
@@ -136,6 +137,41 @@ def test_calibration_metadata_is_used_for_static_activation() -> None:
     dataset, samples = config.calibration_metadata()
     assert dataset == "HuggingFaceH4/ultrachat_200k"
     assert samples == 256
+
+
+def test_static_with_smoothquant_transform_requires_calibration_metadata() -> None:
+    raw = _base_config()
+    raw["method"]["name"] = "static"
+    raw["method"]["enable_smoothquant"] = True
+    raw["artifacts"]["activations"]["granularity"] = "tensor"
+    config = PTQRunConfig.model_validate(raw)
+    dataset, samples = config.calibration_metadata()
+    assert dataset == "HuggingFaceH4/ultrachat_200k"
+    assert samples == 256
+    assert config.method_key() == "smoothquant+static"
+
+
+def test_default_smoothquant_alpha_matches_reference_recipe() -> None:
+    config = PTQRunConfig.model_validate(_base_config())
+    assert config.method.smoothquant_alpha == 0.8
+
+
+def test_smoothquant_transform_requires_activations_enabled() -> None:
+    raw = _base_config()
+    raw["method"]["name"] = "gptq"
+    raw["method"]["enable_smoothquant"] = True
+    raw["artifacts"]["activations"] = {
+        "enabled": False,
+        "dtype": "none",
+        "granularity": "none",
+        "symmetric": True,
+    }
+    config = PTQRunConfig.model_validate(raw)
+    with pytest.raises(
+        ValueError,
+        match="smoothquant requires activation quantization",
+    ):
+        validate_supported_config(config)
 
 
 def test_static_attention_quantization_requires_calibration_metadata() -> None:

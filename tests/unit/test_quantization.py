@@ -18,6 +18,7 @@ from ptq.config import (
 from ptq.quantization.awq import apply_awq
 from ptq.quantization.calibration_qparams import (
     AttentionQKVStats,
+    calculate_bounds_qparams,
     populate_static_attention_parameters,
 )
 from ptq.quantization.gptq import apply_gptq
@@ -296,7 +297,31 @@ def _smoothquant_config() -> PTQRunConfig:
                         update={"dtype": QuantizationDType.INT8}
                     ),
                     "activations": config.artifacts.activations.model_copy(
+                        update={
+                            "dtype": QuantizationDType.INT8,
+                            "symmetric": False,
+                        }
+                    ),
+                }
+            ),
+        }
+    )
+
+
+def _static_int8_config() -> PTQRunConfig:
+    config = _static_fp8_config()
+    return config.model_copy(
+        update={
+            "artifacts": config.artifacts.model_copy(
+                update={
+                    "weights": config.artifacts.weights.model_copy(
                         update={"dtype": QuantizationDType.INT8}
+                    ),
+                    "activations": config.artifacts.activations.model_copy(
+                        update={
+                            "dtype": QuantizationDType.INT8,
+                            "symmetric": False,
+                        }
                     ),
                 }
             ),
@@ -354,6 +379,20 @@ def _gptq_config() -> PTQRunConfig:
     )
 
 
+def _smoothquant_gptq_w8a8_config() -> PTQRunConfig:
+    config = _static_int8_config()
+    return config.model_copy(
+        update={
+            "method": config.method.model_copy(
+                update={
+                    "name": QuantizationMethod.GPTQ,
+                    "enable_smoothquant": True,
+                }
+            )
+        }
+    )
+
+
 def test_prepare_static_fp8_quantization_keeps_input_scales_finite() -> None:
     model = _TinyLM().eval()
     tokenizer = _TinyTokenizer()
@@ -374,6 +413,48 @@ def test_prepare_static_fp8_quantization_keeps_input_scales_finite() -> None:
     ]
     assert input_scales
     assert all(torch.isfinite(scale).all() for scale in input_scales)
+
+
+def test_prepare_static_int8_quantization_populates_nonzero_input_zero_points() -> None:
+    model = _TinyLM().eval()
+    tokenizer = _TinyTokenizer()
+    config = _static_int8_config()
+
+    prepare_model_for_quantization(
+        model=model,
+        tokenizer=tokenizer,
+        config=config,
+        calibration_texts=["hello", "quantization"],
+        device="cpu",
+    )
+
+    input_zero_points = [
+        module.input_zero_point.detach()
+        for module in model.modules()
+        if hasattr(module, "input_zero_point") and module.input_zero_point is not None
+    ]
+    assert input_zero_points
+    assert all(torch.isfinite(zero_point).all() for zero_point in input_zero_points)
+    assert any(zero_point.abs().sum().item() > 0 for zero_point in input_zero_points)
+
+
+def test_asymmetric_qparams_use_signed_observed_range() -> None:
+    args = QuantizationArgs(
+        num_bits=8,
+        type=QuantizationType.INT,
+        symmetric=False,
+        strategy=QuantizationStrategy.TENSOR,
+        dynamic=False,
+    )
+    min_vals = torch.tensor([-2.0], dtype=torch.float32)
+    max_vals = torch.tensor([6.0], dtype=torch.float32)
+
+    scale, zero_point = calculate_bounds_qparams(min_vals, max_vals, args)
+
+    assert torch.isfinite(scale).all()
+    assert torch.isfinite(zero_point).all()
+    assert scale.item() > 0
+    assert zero_point.item() != 0
 
 
 def test_apply_smoothquant_preserves_qwen_projection_outputs() -> None:
@@ -456,6 +537,37 @@ def test_apply_gptq_updates_tiny_model_weights() -> None:
     assert "fc1" in quantized
     assert torch.isfinite(quantized["fc1"][1].scale).all()
     assert not torch.allclose(original_weight, model.fc1.weight)
+
+
+def test_prepare_smoothquant_plus_gptq_populates_static_qparams() -> None:
+    torch.manual_seed(0)
+    model = Qwen3ForCausalLM(hidden_size=8).eval()
+    tokenizer = _TinyTokenizer()
+    config = _smoothquant_gptq_w8a8_config()
+
+    prepare_model_for_quantization(
+        model=model,
+        tokenizer=tokenizer,
+        config=config,
+        calibration_texts=["hello", "quantization"],
+        device="cpu",
+    )
+
+    input_zero_points = [
+        module.input_zero_point.detach()
+        for module in model.modules()
+        if hasattr(module, "input_zero_point") and module.input_zero_point is not None
+    ]
+    weight_scales = [
+        module.weight_scale.detach()
+        for module in model.modules()
+        if hasattr(module, "weight_scale") and module.weight_scale is not None
+    ]
+
+    assert input_zero_points
+    assert weight_scales
+    assert any(zero_point.abs().sum().item() > 0 for zero_point in input_zero_points)
+    assert all(torch.isfinite(scale).all() for scale in weight_scales)
 
 
 def test_populate_static_attention_parameters_sets_qkv_scales() -> None:
