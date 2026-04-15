@@ -182,28 +182,50 @@ uv run ruff check src tests
 uv run pytest tests -q
 ```
 
-## How Runs Work
+## CLI
 
-Every run is driven by one explicit YAML config.
-
-Standard workflow:
+The public CLI is now split into two explicit flows:
 
 ```bash
 uv run ptq validate-config <config.yaml>
-uv run ptq run <config.yaml>
+uv run ptq quantize --config <config.yaml> [--output-path <artifact-root>]
+uv run ptq evaluate --model-ref <path-or-hf-model> --tasks <task1,task2,...> [--num-samples N] [--output-path <exact-eval-dir>]
 ```
 
-The config controls:
+`quantize`:
 
-- quantization method
-- enabled artifacts
-- dtype and granularity
-- calibration dataset and sample count
-- export settings
-- evaluation tasks
-- GPU selection
+- accepts one YAML config
+- exports the quantized artifact
+- writes `run_metadata.json`
+- runs the 3-prompt sanity check and writes `sanity_outputs.json`
+- does not run `lm-eval` and does not write `metrics_*.csv`
 
-Before running, edit `runtime.gpu_id` in the YAML to a free GPU on your machine.
+`evaluate`:
+
+- accepts a local artifact path, local model directory, or HF model ID
+- does not require the YAML
+- writes `lm_eval_results.json` and `eval_metadata.json`
+- appends `metrics_*.csv`
+- uses `--num-samples` as the optional eval limit; omit it for full evaluation
+- exposes optional runtime overrides with code defaults:
+  `--gpu-memory-utilization` (`0.5`), `--max-model-len` (`4096`), and
+  `--max-gen-toks` (`512`)
+
+Runtime behavior:
+
+- `quantize` still uses `runtime.gpu_id` from the YAML
+- `evaluate` uses the current `CUDA_VISIBLE_DEVICES` environment instead of a CLI GPU flag
+- `evaluate --output-path` is the exact directory where eval results are written
+- `quantize --output-path` overrides the parent artifact root, while preserving the normal nested run layout
+
+For quantized configs, the normal sequence is:
+
+```bash
+uv run ptq validate-config <config.yaml>
+uv run ptq quantize --config <config.yaml>
+# then use the printed model_ref
+uv run ptq evaluate --model-ref <printed-model-ref> --tasks gsm8k,ifeval,mmlu
+```
 
 ## Benchmark Snapshot
 
@@ -246,11 +268,18 @@ Current INT8 takeaway:
 
 These are the canonical configs for the strongest validated run per method family in this repo.
 
+For every quantized config below, use the same two-step pattern:
+
+```bash
+uv run ptq validate-config <config.yaml>
+uv run ptq quantize --config <config.yaml>
+uv run ptq evaluate --model-ref <printed-model-ref> --tasks gsm8k,ifeval,mmlu
+```
+
 ### Baseline
 
 ```bash
-uv run ptq validate-config configs/example_baseline_qwen3.yaml
-uv run ptq run configs/example_baseline_qwen3.yaml
+uv run ptq evaluate --model-ref Qwen/Qwen3-4B --tasks gsm8k,ifeval,mmlu
 ```
 
 ### Dynamic W8A8 FP8
@@ -259,7 +288,7 @@ This is the best complete dynamic W8A8 config currently validated across `gsm8k`
 
 ```bash
 uv run ptq validate-config configs/generated/eval_dynamic_w8a8_fp8_qwen3.yaml
-uv run ptq run configs/generated/eval_dynamic_w8a8_fp8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_dynamic_w8a8_fp8_qwen3.yaml
 ```
 
 Metrics:
@@ -277,7 +306,7 @@ This is the `llm-compressor`-style block path:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_dynamic_w8a8_fp8_block_qwen3.yaml
-uv run ptq run configs/generated/eval_dynamic_w8a8_fp8_block_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_dynamic_w8a8_fp8_block_qwen3.yaml
 ```
 
 Metrics:
@@ -290,7 +319,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_dynamic_w8a8_int8_qwen3.yaml
-uv run ptq run configs/generated/eval_dynamic_w8a8_int8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_dynamic_w8a8_int8_qwen3.yaml
 ```
 
 Metrics:
@@ -303,7 +332,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_static_w8a8_fp8_qwen3.yaml
-uv run ptq run configs/generated/eval_static_w8a8_fp8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_static_w8a8_fp8_qwen3.yaml
 ```
 
 Metrics:
@@ -316,7 +345,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_dynamic_w8a8_kv_fp8_qwen3.yaml
-uv run ptq run configs/generated/eval_dynamic_w8a8_kv_fp8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_dynamic_w8a8_kv_fp8_qwen3.yaml
 ```
 
 Metrics:
@@ -329,7 +358,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_dynamic_w8a8_kv_int8_qwen3.yaml
-uv run ptq run configs/generated/eval_dynamic_w8a8_kv_int8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_dynamic_w8a8_kv_int8_qwen3.yaml
 ```
 
 Metrics:
@@ -342,7 +371,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_static_w8a8_attention_kv_fp8_qwen3.yaml
-uv run ptq run configs/generated/eval_static_w8a8_attention_kv_fp8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_static_w8a8_attention_kv_fp8_qwen3.yaml
 ```
 
 Metrics:
@@ -355,7 +384,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_static_w8a8_kv_fp8_qwen3.yaml
-uv run ptq run configs/generated/eval_static_w8a8_kv_fp8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_static_w8a8_kv_fp8_qwen3.yaml
 ```
 
 Metrics:
@@ -368,7 +397,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_static_w8a8_int8_qwen3.yaml
-uv run ptq run configs/generated/eval_static_w8a8_int8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_static_w8a8_int8_qwen3.yaml
 ```
 
 Metrics:
@@ -388,7 +417,7 @@ Important note:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_static_w8a8_kv_int8_qwen3.yaml
-uv run ptq run configs/generated/eval_static_w8a8_kv_int8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_static_w8a8_kv_int8_qwen3.yaml
 ```
 
 Metrics:
@@ -401,7 +430,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_static_w8a8_attention_kv_int8_qwen3.yaml
-uv run ptq run configs/generated/eval_static_w8a8_attention_kv_int8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_static_w8a8_attention_kv_int8_qwen3.yaml
 ```
 
 Metrics:
@@ -414,7 +443,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_smoothquant_w8a8_fp8_qwen3.yaml
-uv run ptq run configs/generated/eval_smoothquant_w8a8_fp8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_smoothquant_w8a8_fp8_qwen3.yaml
 ```
 
 Metrics:
@@ -427,7 +456,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_smoothquant_w8a8_int8_qwen3.yaml
-uv run ptq run configs/generated/eval_smoothquant_w8a8_int8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_smoothquant_w8a8_int8_qwen3.yaml
 ```
 
 Metrics:
@@ -446,7 +475,7 @@ Follow-up smoke after the asymmetric activation calibration fix:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_awq_w8a8_int8_qwen3.yaml
-uv run ptq run configs/generated/eval_awq_w8a8_int8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_awq_w8a8_int8_qwen3.yaml
 ```
 
 Metrics:
@@ -463,7 +492,7 @@ with static tensor activations.
 
 ```bash
 uv run ptq validate-config configs/generated/eval_smoothquant_gptq_w8a8_int8_qwen3.yaml
-uv run ptq run configs/generated/eval_smoothquant_gptq_w8a8_int8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_smoothquant_gptq_w8a8_int8_qwen3.yaml
 ```
 
 Metrics:
@@ -476,7 +505,7 @@ Metrics:
 
 ```bash
 uv run ptq validate-config configs/generated/eval_gptq_w8a8_int8_qwen3.yaml
-uv run ptq run configs/generated/eval_gptq_w8a8_int8_qwen3.yaml
+uv run ptq quantize --config configs/generated/eval_gptq_w8a8_int8_qwen3.yaml
 ```
 
 Current state:
@@ -499,10 +528,10 @@ You can run them with:
 
 ```bash
 uv run ptq validate-config configs/example_awq_w8a8_fp8.yaml
-uv run ptq run configs/example_awq_w8a8_fp8.yaml
+uv run ptq quantize --config configs/example_awq_w8a8_fp8.yaml
 
 uv run ptq validate-config configs/example_gptq_w8a8_fp8.yaml
-uv run ptq run configs/example_gptq_w8a8_fp8.yaml
+uv run ptq quantize --config configs/example_gptq_w8a8_fp8.yaml
 ```
 
 Current state:
@@ -530,10 +559,12 @@ For fast validation, use the `smoke_*.yaml` configs in [configs](/mnt/ssd1/shrey
 Examples:
 
 ```bash
-uv run ptq run configs/smoke_dynamic_w8a8_fp8_qwen3.yaml
-uv run ptq run configs/smoke_dynamic_w8a8_int8_qwen3.yaml
-uv run ptq run configs/smoke_static_w8a8_fp8_qwen3.yaml
-uv run ptq run configs/smoke_static_w8a8_int8_qwen3.yaml
+uv run ptq quantize --config configs/smoke_dynamic_w8a8_fp8_qwen3.yaml
+uv run ptq quantize --config configs/smoke_dynamic_w8a8_int8_qwen3.yaml
+uv run ptq quantize --config configs/smoke_static_w8a8_fp8_qwen3.yaml
+uv run ptq quantize --config configs/smoke_static_w8a8_int8_qwen3.yaml
+# then evaluate the printed model_ref if you want task metrics
+uv run ptq evaluate --model-ref <printed-model-ref> --tasks gsm8k --num-samples 10
 ```
 
 ## Metrics and Artifacts
