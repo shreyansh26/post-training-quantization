@@ -46,6 +46,29 @@ class MetricRow(BaseModel):
             num_calibration_samples=num_calibration_samples,
         )
 
+    @classmethod
+    def external(
+        cls,
+        run_id: str,
+        model_ref: str,
+        metric_name: str,
+        metric_value: float,
+    ) -> Self:
+        """Build a best-effort row for models evaluated outside PTQ run metadata."""
+        return cls(
+            run_id=run_id,
+            model_name=model_ref,
+            quantization_artifact="unknown",
+            quantization_dtype="unknown",
+            quantization_granularity="unknown",
+            quantization_method="external",
+            metric_name=metric_name,
+            metric_value=metric_value,
+            artifact_path=model_ref,
+            calibration_dataset="unknown",
+            num_calibration_samples=0,
+        )
+
 
 def upsert_metric_rows(csv_path: Path, rows: list[MetricRow]) -> None:
     existing: list[dict[str, str]] = []
@@ -83,3 +106,20 @@ def has_metrics_for_method(
             ) == method:
                 return True
     return False
+
+
+def external_metric_rows(
+    run_id: str,
+    model_ref: str,
+    task_metrics: dict[str, float],
+) -> list[MetricRow]:
+    """Convert a task metric mapping into rows without PTQ config metadata."""
+    return [
+        MetricRow.external(
+            run_id=run_id,
+            model_ref=model_ref,
+            metric_name=metric_name,
+            metric_value=metric_value,
+        )
+        for metric_name, metric_value in task_metrics.items()
+    ]

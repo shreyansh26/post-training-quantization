@@ -1,13 +1,12 @@
 import json
 import os
 import subprocess
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from transformers import AutoTokenizer
 from vllm import LLM, SamplingParams
-
-from ptq.config import PTQRunConfig
 
 TASK_METRIC_FILTERS: dict[str, set[str]] = {
     "gsm8k": {
@@ -24,6 +23,18 @@ TASK_METRIC_FILTERS: dict[str, set[str]] = {
 }
 
 
+@dataclass(frozen=True)
+class VLLMEvaluationSettings:
+    """Runtime knobs shared by sanity generation and lm-eval invocations."""
+
+    trust_remote_code: bool = False
+    enforce_eager: bool = True
+    gpu_memory_utilization: float = 0.5
+    max_model_len: int = 4096
+    enable_thinking: bool = False
+    max_gen_toks: int = 512
+
+
 def load_sanity_prompts(path: Path) -> list[str]:
     """Load the non-empty sanity prompts used for quick qualitative checks."""
     prompts = []
@@ -37,13 +48,13 @@ def load_sanity_prompts(path: Path) -> list[str]:
 def run_vllm_sanity_generation(
     model_ref: str,
     prompts: list[str],
-    config: PTQRunConfig,
+    settings: VLLMEvaluationSettings,
     output_path: Path,
 ) -> None:
     """Render chat prompts and persist short deterministic vLLM generations."""
     tokenizer = AutoTokenizer.from_pretrained(
         model_ref,
-        trust_remote_code=config.model.trust_remote_code,
+        trust_remote_code=settings.trust_remote_code,
     )
     rendered_prompts: list[str] = []
     for prompt in prompts:
@@ -53,7 +64,7 @@ def run_vllm_sanity_generation(
                 chat,
                 tokenize=False,
                 add_generation_prompt=True,
-                enable_thinking=config.evaluation.lm_eval_enable_thinking,
+                enable_thinking=settings.enable_thinking,
             )
         except TypeError:
             rendered = tokenizer.apply_chat_template(
@@ -65,12 +76,12 @@ def run_vllm_sanity_generation(
 
     llm = LLM(
         model=model_ref,
-        trust_remote_code=config.model.trust_remote_code,
+        trust_remote_code=settings.trust_remote_code,
         dtype="auto",
-        enforce_eager=config.runtime.enforce_eager,
+        enforce_eager=settings.enforce_eager,
         tensor_parallel_size=1,
-        gpu_memory_utilization=config.runtime.gpu_memory_utilization,
-        max_model_len=config.runtime.max_model_len,
+        gpu_memory_utilization=settings.gpu_memory_utilization,
+        max_model_len=settings.max_model_len,
     )
     sampling_params = SamplingParams(
         temperature=0.0,
@@ -121,7 +132,9 @@ def _collect_numeric_metrics(
 
 def run_lm_eval_vllm(
     model_ref: str,
-    config: PTQRunConfig,
+    tasks: list[str],
+    settings: VLLMEvaluationSettings,
+    num_samples: int | None,
     output_dir: Path,
 ) -> tuple[dict[str, dict[str, float]], Path]:
     """Run the configured lm-eval task set against vLLM and collect scalars."""
@@ -130,14 +143,14 @@ def run_lm_eval_vllm(
     model_args = ",".join(
         [
             f"pretrained={model_ref}",
-            f"trust_remote_code={str(config.model.trust_remote_code)}",
+            f"trust_remote_code={str(settings.trust_remote_code)}",
             "dtype=auto",
             "tensor_parallel_size=1",
-            f"enforce_eager={str(config.runtime.enforce_eager)}",
-            f"gpu_memory_utilization={config.runtime.gpu_memory_utilization}",
-            f"max_model_len={config.runtime.max_model_len}",
-            f"enable_thinking={str(config.evaluation.lm_eval_enable_thinking)}",
-            f"max_gen_toks={config.evaluation.lm_eval_max_gen_toks}",
+            f"enforce_eager={str(settings.enforce_eager)}",
+            f"gpu_memory_utilization={settings.gpu_memory_utilization}",
+            f"max_model_len={settings.max_model_len}",
+            f"enable_thinking={str(settings.enable_thinking)}",
+            f"max_gen_toks={settings.max_gen_toks}",
         ]
     )
     cmd = [
@@ -147,15 +160,15 @@ def run_lm_eval_vllm(
         "--model_args",
         model_args,
         "--tasks",
-        ",".join(config.evaluation.tasks),
+        ",".join(tasks),
         "--batch_size",
         "auto",
         "--output_path",
         str(output_dir),
         "--apply_chat_template",
     ]
-    if config.evaluation.mode.value == "dev":
-        cmd.extend(["--limit", str(config.evaluation.dev_limit)])
+    if num_samples is not None:
+        cmd.extend(["--limit", str(num_samples)])
 
     env = os.environ.copy()
     env.setdefault("TOKENIZERS_PARALLELISM", "false")
@@ -165,7 +178,7 @@ def run_lm_eval_vllm(
     raw = json.loads(results_json.read_text(encoding="utf-8"))
     task_results = raw.get("results", {})
     metrics: dict[str, dict[str, float]] = {}
-    for task in config.evaluation.tasks:
+    for task in tasks:
         if task in task_results:
             metrics[task] = _collect_numeric_metrics(task, task_results[task])
     return metrics, results_json
