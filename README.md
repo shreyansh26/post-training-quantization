@@ -115,6 +115,23 @@ For static W8A8 specifically:
 - activation qparams are computed from calibration data and exported per layer
 - `vLLM` reads those frozen activation qparams at inference time
 
+For plain W8A8 (`dynamic` or `static` without `smoothquant`, `awq`, or `gptq`),
+the internal flow is:
+
+1. `prepare_method_for_quantization(...)` returns immediately without modifying
+   the model.
+2. `build_quantization_config(...)` builds the `compressed-tensors`
+   `QuantizationConfig` for the enabled artifacts.
+3. `apply_quantization_config(...)` instruments the in-memory model with the
+   requested weight / activation / attention / KV-cache scheme.
+4. `populate_weight_quantization_parameters(...)` computes and writes weight
+   `scale` / `zero_point` tensors.
+5. `calibrate_static_activation_parameters(...)` only does real work for
+   `static`; for `dynamic` it effectively skips activation calibration because
+   those activations will be quantized by the runtime.
+6. `populate_static_attention_parameters(...)` only does real work when static
+   attention or KV-cache quantization is enabled.
+
 For attention and KV cache in the current runtime stack:
 
 - dynamic KV-cache quantization is supported and composes cleanly with weight and
@@ -126,6 +143,25 @@ For attention and KV cache in the current runtime stack:
   enabled
 - dynamic attention quantization is not exposed because the installed
   `compressed-tensors` + `vLLM` path does not support it cleanly
+
+Activation symmetry defaults to keep in mind when writing configs:
+
+- dynamic INT8 activations: use `symmetric: true` by default
+- static-like INT8 activations: use `symmetric: false`
+- FP8 activations: keep `symmetric: true`
+
+Why this is the recommended rule in this repo:
+
+- static-like INT8 activation quantization benefits from asymmetric ranges
+  because calibration can capture shifted activation intervals and export a
+  nonzero zero-point
+- dynamic INT8 activation quantization can be either symmetric or asymmetric;
+  both patterns exist in `llm-compressor` recipes. The validated dynamic INT8
+  configs in this repo currently use symmetric activations.
+- FP8 in this repo is treated as a scaled floating-point lattice rather than an
+  affine integer quantizer. In both the sibling QAT codebase and this PTQ
+  project, FP8 uses a zero-centered scale instead of relying on a learned
+  nonzero zero-point, so `symmetric: true` is the right setting to keep.
 
 ## Compatibility Matrix
 
