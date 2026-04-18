@@ -65,4 +65,7 @@ def prepare_method_for_quantization(
         }
         return MethodPreparationResult(gptq_parameters=gptq_parameters)
 
+    # Plain static/dynamic W8A8 does not need a method-specific transform.
+    # The real work happens later when we build/apply the compressed-tensors
+    # scheme and populate the serialized qparams for the enabled artifacts.
     return MethodPreparationResult()

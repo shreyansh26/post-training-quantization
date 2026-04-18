@@ -44,6 +44,9 @@ def prepare_model_for_quantization(
         device=device,
     )
     quant_config = build_quantization_config(config, model=model)
+    # This is the main in-memory mutation step for plain PTQ W8A8. After this,
+    # compressed-tensors has attached the quantization scheme and the required
+    # qparam buffers to the matching modules.
     apply_quantization_config(model, quant_config)
     populate_weight_quantization_parameters(
         model=model,

@@ -495,6 +495,9 @@ def populate_static_activation_parameters(
             continue
         args = scheme.input_activations
         if args.dynamic in {True, DynamicType.LOCAL}:
+            # Dynamic activations are quantized by the runtime from each observed
+            # input tensor, so there are no frozen input_scale/input_zero_point
+            # tensors to calibrate and serialize here.
             continue
         min_tensor, max_tensor = activation_bounds_for_strategy(
             activation_stats[name],

@@ -83,6 +83,10 @@ def build_artifact_quant_args(
         else (activation_strategy(settings), None)
     )
 
+    # Symmetry is intentionally config-driven for PTQ INT8 activations. FP8 also
+    # flows through this flag, but in compressed-tensors "symmetric=True" means
+    # a zero-centered scale for the floating-point lattice, not an affine INT8-
+    # style learned nonzero zero-point.
     return QuantizationArgs(
         num_bits=8,
         type=dtype_to_quant_type(settings.dtype),
