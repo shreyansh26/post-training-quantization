@@ -32,11 +32,11 @@ Current scope:
 
 ## Repo Layout
 
-- [src/ptq](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq) core library
-- [configs](/mnt/ssd1/shreyansh/home_dir/ptq/configs) explicit YAML configs
-- [tests](/mnt/ssd1/shreyansh/home_dir/ptq/tests) unit and integration tests
-- [prompts](/mnt/ssd1/shreyansh/home_dir/ptq/prompts) sanity prompts
-- [metrics_gsm8k.csv](/mnt/ssd1/shreyansh/home_dir/ptq/metrics_gsm8k.csv), [metrics_ifeval.csv](/mnt/ssd1/shreyansh/home_dir/ptq/metrics_ifeval.csv), [metrics_mmlu.csv](/mnt/ssd1/shreyansh/home_dir/ptq/metrics_mmlu.csv) evaluation logs
+- [src/ptq](src/ptq) core library
+- [configs](configs) explicit YAML configs
+- [tests](tests) unit and integration tests
+- [prompts](prompts) sanity prompts
+- [metrics_gsm8k.csv](metrics_gsm8k.csv), [metrics_ifeval.csv](metrics_ifeval.csv), [metrics_mmlu.csv](metrics_mmlu.csv) evaluation logs
 - `/mnt/ssd2/shreyansh/ptq_experiments/artifacts` exported artifacts
 
 ## Quantization Module Guide
@@ -44,35 +44,35 @@ Current scope:
 The quantization code is intentionally split by responsibility rather than by
 "one file per algorithm family."
 
-- [src/ptq/quantization/quantization_pipeline.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/quantization_pipeline.py:1)
+- [src/ptq/quantization/quantization_pipeline.py](src/ptq/quantization/quantization_pipeline.py#L1)
   Thin orchestration layer for the production quantization/export path. It runs
   method preparation, collects calibration stats, applies the
   `compressed-tensors` instrumentation, populates frozen qparams, and exports an
   artifact that HF and `vLLM` can load.
-- [src/ptq/quantization/quantization_scheme.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/quantization_scheme.py:1)
+- [src/ptq/quantization/quantization_scheme.py](src/ptq/quantization/quantization_scheme.py#L1)
   Builds artifact-level quantization configs for weights, activations,
   attention, and KV cache. This is where the orthogonal artifact combinations
   are assembled from YAML config.
-- [src/ptq/quantization/calibration_qparams.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/calibration_qparams.py:1)
+- [src/ptq/quantization/calibration_qparams.py](src/ptq/quantization/calibration_qparams.py#L1)
   Collects calibration statistics and populates serialized scales / zero-points
   for the enabled artifacts after instrumentation.
-- [src/ptq/quantization/method_preparation.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/method_preparation.py:1)
+- [src/ptq/quantization/method_preparation.py](src/ptq/quantization/method_preparation.py#L1)
   Dispatches method-specific preprocessing before the general artifact export
   path. This is where `smoothquant`, `awq`, and `gptq` hook into the pipeline.
-- [src/ptq/quantization/weight_only.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/weight_only.py:1)
+- [src/ptq/quantization/weight_only.py](src/ptq/quantization/weight_only.py#L1)
   Shared weight-quantization math used by RTN-style helpers and weight-only
   methods like AWQ and GPTQ.
-- [src/ptq/quantization/smoothquant.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/smoothquant.py:1)
+- [src/ptq/quantization/smoothquant.py](src/ptq/quantization/smoothquant.py#L1)
   SmoothQuant-specific balancing logic that folds activation scaling into the
   upstream normalization / downstream linear weights.
-- [src/ptq/quantization/awq.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/awq.py:1)
+- [src/ptq/quantization/awq.py](src/ptq/quantization/awq.py#L1)
   AWQ-specific calibration and scaling search for weight-only quantization.
-- [src/ptq/quantization/gptq.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/gptq.py:1)
+- [src/ptq/quantization/gptq.py](src/ptq/quantization/gptq.py#L1)
   GPTQ-specific Hessian accumulation and blockwise weight updates.
-- [src/ptq/quantization/simulated_w8a8_linear.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/simulated_w8a8_linear.py:1)
+- [src/ptq/quantization/simulated_w8a8_linear.py](src/ptq/quantization/simulated_w8a8_linear.py#L1)
   Simulation-only fake-quant linear wrappers used by tests and local validation.
   This is not the production export path.
-- [src/ptq/quantization/primitives.py](/mnt/ssd1/shreyansh/home_dir/ptq/src/ptq/quantization/primitives.py:1)
+- [src/ptq/quantization/primitives.py](src/ptq/quantization/primitives.py#L1)
   Small tensor-level fake-quant helpers used by the simulation layer.
 
 ## Quantization Flow
@@ -590,7 +590,7 @@ Reference failing runs:
 
 ## Quick Smoke Runs
 
-For fast validation, use the `smoke_*.yaml` configs in [configs](/mnt/ssd1/shreyansh/home_dir/ptq/configs:1). They keep the same quantization structures but shorten evaluation.
+For fast validation, use the `smoke_*.yaml` configs in [configs](configs). They keep the same quantization structures but shorten evaluation.
 
 Examples:
 
@@ -621,9 +621,9 @@ Each run directory contains:
 
 Metrics are appended or updated in:
 
-- [metrics_gsm8k.csv](/mnt/ssd1/shreyansh/home_dir/ptq/metrics_gsm8k.csv:1)
-- [metrics_ifeval.csv](/mnt/ssd1/shreyansh/home_dir/ptq/metrics_ifeval.csv:1)
-- [metrics_mmlu.csv](/mnt/ssd1/shreyansh/home_dir/ptq/metrics_mmlu.csv:1)
+- [metrics_gsm8k.csv](metrics_gsm8k.csv#L1)
+- [metrics_ifeval.csv](metrics_ifeval.csv#L1)
+- [metrics_mmlu.csv](metrics_mmlu.csv#L1)
 
 ## Notes
 
